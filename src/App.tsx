@@ -9,10 +9,26 @@ import './App.css'
 // so it has room to fall onto the track below.
 const START_DROP_ABOVE_CENTER = 150
 
+// Legend: what each draw color does, grouped by behavior. Swatch colors are
+// approximate tldraw v5 palette values (light/dark theme aside) — they only
+// need to read as "that color" next to its name. Source of truth for the
+// mapping itself is COLOR_TO_KIND in game/geometry.ts; keep these in sync.
+const LEGEND: { label: string; desc: string; swatches: string[] }[] = [
+	{ label: 'Solid', desc: 'Basic track', swatches: ['#1d1d1d', '#9fa8b2'] },
+	{ label: 'Accelerate', desc: 'Speeds you up', swatches: ['#e03131', '#ff8787'] },
+	{ label: 'Brake', desc: 'Slows you down', swatches: ['#f76707'] },
+	{ label: 'Bounce', desc: 'Springy', swatches: ['#ffc034'] },
+	{ label: 'Sticky', desc: 'High grip', swatches: ['#ae3ec9', '#e599f7'] },
+	{ label: 'Ice', desc: 'Frictionless', swatches: ['#e8eef2'] },
+	{ label: 'One-way', desc: 'Front side only', swatches: ['#4263eb', '#74c0fc'] },
+	{ label: 'Scenery', desc: 'Non-collidable', swatches: ['#2f9e44', '#8ce99a'] },
+]
+
 function App() {
 	const [editor, setEditor] = useState<Editor | null>(null)
 	const [playing, setPlaying] = useState(false)
 	const [follow, setFollow] = useState(true)
+	const [showLegend, setShowLegend] = useState(false)
 	const [startPoint, setStartPoint] = useState<Vec2>({ x: 200, y: 100 })
 	const [stats, setStats] = useState({ distance: 0, speed: 0 })
 
@@ -83,6 +99,14 @@ function App() {
 				>
 					🎥
 				</button>
+				<button
+					className={showLegend ? 'lr-btn lr-icon lr-active' : 'lr-btn lr-icon'}
+					title="Color legend"
+					aria-pressed={showLegend}
+					onClick={() => setShowLegend((s) => !s)}
+				>
+					?
+				</button>
 				<span className="lr-stat">
 					<b>{Math.round(stats.distance)}</b>
 					<small>dist</small>
@@ -92,6 +116,23 @@ function App() {
 					<small>speed</small>
 				</span>
 			</div>
+
+			{showLegend && (
+				<div className="lr-legend">
+					<div className="lr-legend-title">Draw with a color to set its behavior</div>
+					{LEGEND.map((row) => (
+						<div className="lr-legend-row" key={row.label}>
+							<span className="lr-legend-swatches">
+								{row.swatches.map((c) => (
+									<span className="lr-legend-swatch" key={c} style={{ background: c }} />
+								))}
+							</span>
+							<b>{row.label}</b>
+							<small>{row.desc}</small>
+						</div>
+					))}
+				</div>
+			)}
 		</div>
 	)
 }
