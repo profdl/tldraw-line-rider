@@ -1,6 +1,6 @@
 import { getPointsFromDrawSegment, type Editor, type TLShape, type TLDrawShape, type Vec } from 'tldraw'
 import type { LineKind, Segment, Vec2 } from './physics'
-import type { Checkpoint } from './checkpoints'
+import { makeCheckpoint, type Checkpoint } from './checkpoints'
 
 // The "kind" of a track line is derived from a native shape's color. This keeps
 // us fully on tldraw's native stack — users draw with the native pencil/geo
@@ -169,6 +169,13 @@ function makeSeg(a: Vec2, b: Vec2, spec: KindSpec): TrackSegment {
 // color->line-kind contract, and keeps us off custom records. Notes are never
 // collidable track (they're not in COLLIDABLE_TYPES), so this is the only place
 // they matter to gameplay.
+//
+// The oriented-box construction below decomposes the page transform into a single
+// rotation + axis scales. That's exact for notes specifically: a native note's
+// transform is only ever translate + rotate + (uniform) scale — never skew or
+// non-uniform scale — so decompose() recovers its true rotation and footprint.
+// (If a future CHECKPOINT_TYPE could be skewed, the box would approximate it; the
+// pure box math is covered by checkpoints.test.ts.)
 const CHECKPOINT_TYPE = 'note'
 
 /**
@@ -200,16 +207,9 @@ function collectCheckpointsNow(editor: Editor): Checkpoint[] {
 		const center = transform.applyToPoint({ x: lb.x + lb.w / 2, y: lb.y + lb.h / 2 })
 		// Decompose so the half-extents pick up any page-space scale (a note's
 		// `scale` prop) alongside the rotation — local bounds alone would be wrong
-		// for a scaled note.
+		// for a scaled note. The box math itself lives in the pure makeCheckpoint.
 		const { scaleX, scaleY, rotation } = transform.decompose()
-		checkpoints.push({
-			id: shape.id,
-			cx: center.x,
-			cy: center.y,
-			halfW: (lb.w / 2) * Math.abs(scaleX),
-			halfH: (lb.h / 2) * Math.abs(scaleY),
-			rotation,
-		})
+		checkpoints.push(makeCheckpoint(shape.id, center, lb, scaleX, scaleY, rotation))
 	}
 	return checkpoints
 }

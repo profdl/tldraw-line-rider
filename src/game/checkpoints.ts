@@ -25,6 +25,35 @@ export interface Checkpoint {
 	rotation: number
 }
 
+/**
+ * Build a checkpoint's oriented box from a source shape's LOCAL bounds and its
+ * page transform's decomposed scale/rotation plus its page-space center. Pure
+ * (the editor-coupled extraction lives in geometry.ts) so the rotation/scale
+ * math is unit-testable.
+ *
+ * `halfW`/`halfH` come from the local half-extents scaled by |scale|, so a
+ * scaled note's box matches its on-page footprint; `Math.abs` normalizes a
+ * mirrored (negative-scale) note to a positive extent. `rotation` is taken
+ * verbatim from the transform so the box's axes follow the note's.
+ */
+export function makeCheckpoint(
+	id: string,
+	center: Vec2,
+	localBounds: { w: number; h: number },
+	scaleX: number,
+	scaleY: number,
+	rotation: number
+): Checkpoint {
+	return {
+		id,
+		cx: center.x,
+		cy: center.y,
+		halfW: (localBounds.w / 2) * Math.abs(scaleX),
+		halfH: (localBounds.h / 2) * Math.abs(scaleY),
+		rotation,
+	}
+}
+
 /** True when point `p` lies within checkpoint `c`'s oriented box (inclusive). */
 export function pointInCheckpoint(p: Vec2, c: Checkpoint): boolean {
 	// Translate into the box's local frame, then rotate by -rotation so the box
