@@ -1,5 +1,6 @@
 import { getPointsFromDrawSegment, type Editor, type TLShape, type TLDrawShape, type Vec } from 'tldraw'
 import type { LineKind, Segment, Vec2 } from './physics'
+import type { Checkpoint } from './checkpoints'
 
 // The "kind" of a track line is derived from a native shape's color. This keeps
 // us fully on tldraw's native stack — users draw with the native pencil/geo
@@ -148,4 +149,36 @@ function pushPolyline(out: TrackSegment[], pts: Vec[], kind: LineKind, strength:
 
 function makeSeg(a: Vec2, b: Vec2, kind: LineKind, strength: number): TrackSegment {
 	return { a: { x: a.x, y: a.y }, b: { x: b.x, y: b.y }, kind, strength }
+}
+
+// Native sticky-note shapes act as scoring flags / checkpoints. Using a distinct
+// native tool (the note tool) for a distinct gameplay role mirrors the
+// color->line-kind contract, and keeps us off custom records. Notes are never
+// collidable track (they're not in COLLIDABLE_TYPES), so this is the only place
+// they matter to gameplay.
+const CHECKPOINT_TYPE = 'note'
+
+/**
+ * Collect the page-space boxes of every checkpoint (note) shape on the current
+ * page. Read inside editor.run(history:'ignore') for the same cache-freshness
+ * reason as collectSegments.
+ */
+export function collectCheckpoints(editor: Editor): Checkpoint[] {
+	let result: Checkpoint[] = []
+	editor.run(() => {
+		result = collectCheckpointsNow(editor)
+	}, { history: 'ignore' })
+	return result
+}
+
+function collectCheckpointsNow(editor: Editor): Checkpoint[] {
+	const checkpoints: Checkpoint[] = []
+	for (const shape of editor.getCurrentPageShapes()) {
+		if (shape.type !== CHECKPOINT_TYPE) continue
+		// Page bounds resolve against the live record via the shape id.
+		const b = editor.getShapePageBounds(shape.id)
+		if (!b) continue
+		checkpoints.push({ id: shape.id, minX: b.minX, minY: b.minY, maxX: b.maxX, maxY: b.maxY })
+	}
+	return checkpoints
 }

@@ -34,9 +34,11 @@ src/
                        editor read-only while playing.
   App.css              Styling for the control panel and the sled.
   game/
-    geometry.ts        Turns every native shape on the current page into
+    geometry.ts        Turns collidable native shapes on the current page into
                        page-space collision segments via getShapeGeometry /
                        getPointsFromDrawSegment. Maps shape color -> LineKind.
+                       Also collects note shapes as scoring checkpoints.
+    checkpoints.ts     Pure checkpoint hit-testing (point-in-box, scored once).
     physics.ts         The sim: a point-mass sled under gravity, colliding
                        against line segments (Verlet integration). Honors each
                        segment's kind (accelerate / oneway).
@@ -64,8 +66,10 @@ at half strength (a weaker version of the same effect).
 
 - **A real sled**: replace the single point mass with 2–4 linked points
   (constraint-solved) for a body that tumbles, matching classic Line Rider.
-- **Scoring**: `Rider.tsx` already reports distance + speed via `onStats`; add
-  flag/checkpoint shapes and award points when the sled passes them.
+- **Scoring** *(done)*: drop **sticky-note shapes** as flags; the sled collects
+  each the first time it passes through, and the panel shows a `collected/total`
+  count. See [checkpoints.ts](src/game/checkpoints.ts) (pure hit-test) and
+  `collectCheckpoints` in [geometry.ts](src/game/geometry.ts).
 - **Camera follow** *(done)*: the rAF loop in [Rider.tsx](src/game/Rider.tsx)
   eases the viewport center toward the sled while playing (toggle with the 🎥
   button). Lerped, not snapped, and run with `history: 'ignore'`.

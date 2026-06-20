@@ -31,6 +31,7 @@ function App() {
 	const [showLegend, setShowLegend] = useState(false)
 	const [startPoint, setStartPoint] = useState<Vec2>({ x: 200, y: 100 })
 	const [stats, setStats] = useState({ distance: 0, speed: 0 })
+	const [score, setScore] = useState({ collected: 0, total: 0 })
 
 	const handleMount = useCallback((ed: Editor) => {
 		setEditor(ed)
@@ -39,6 +40,10 @@ function App() {
 
 	const onStats = useCallback((distance: number, speed: number) => {
 		setStats({ distance, speed })
+	}, [])
+
+	const onScore = useCallback((collected: number, total: number) => {
+		setScore({ collected, total })
 	}, [])
 
 	// Toggle play. While playing we lock editing (read-only) and clear selection
@@ -61,10 +66,16 @@ function App() {
 	const components: TLComponents = useMemo(
 		() => ({
 			InFrontOfTheCanvas: () => (
-				<Rider playing={playing} follow={follow} startPoint={startPoint} onStats={onStats} />
+				<Rider
+					playing={playing}
+					follow={follow}
+					startPoint={startPoint}
+					onStats={onStats}
+					onScore={onScore}
+				/>
 			),
 		}),
-		[playing, follow, startPoint, onStats]
+		[playing, follow, startPoint, onStats, onScore]
 	)
 
 	return (
@@ -115,6 +126,14 @@ function App() {
 					<b>{Math.round(stats.speed)}</b>
 					<small>speed</small>
 				</span>
+				{score.total > 0 && (
+					<span className="lr-stat">
+						<b>
+							{score.collected}/{score.total}
+						</b>
+						<small>flags</small>
+					</span>
+				)}
 			</div>
 
 			{showLegend && (
@@ -131,6 +150,9 @@ function App() {
 							<small>{row.desc}</small>
 						</div>
 					))}
+					<div className="lr-legend-note">
+						Drop a sticky note as a flag — collect them all on your run.
+					</div>
 				</div>
 			)}
 		</div>

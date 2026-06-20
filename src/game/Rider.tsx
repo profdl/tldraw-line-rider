@@ -1,7 +1,8 @@
 import { useEffect, useRef } from 'react'
 import { useEditor, toDomPrecision } from 'tldraw'
 import { makeRider, step, velocity, PHYSICS, type Vec2 } from './physics'
-import { collectSegments } from './geometry'
+import { collectSegments, collectCheckpoints } from './geometry'
+import { collectCheckpointHits, type Checkpoint } from './checkpoints'
 
 const FIXED_DT = 1 / 120 // physics substep (s)
 const STATS_EVERY = 4 // throttle React stat updates to every Nth frame
@@ -17,6 +18,8 @@ interface RiderProps {
 	follow: boolean
 	startPoint: Vec2
 	onStats: (distance: number, speed: number) => void
+	/** Reports checkpoint progress: how many of `total` flags collected this run. */
+	onScore: (collected: number, total: number) => void
 }
 
 // The sled overlay. Rendered via components.InFrontOfTheCanvas. A single rAF
@@ -24,7 +27,7 @@ interface RiderProps {
 // it positions the sled by recomputing editor.pageToScreen() each frame, so the
 // sled stays glued to the canvas under pan / zoom / resize without any
 // per-frame React re-render (we write the DOM transform imperatively).
-export function Rider({ playing, follow, startPoint, onStats }: RiderProps) {
+export function Rider({ playing, follow, startPoint, onStats, onScore }: RiderProps) {
 	const editor = useEditor()
 	const elRef = useRef<HTMLDivElement | null>(null)
 	const stateRef = useRef(makeRider(startPoint))
@@ -35,6 +38,7 @@ export function Rider({ playing, follow, startPoint, onStats }: RiderProps) {
 	const playingRef = useRef(playing)
 	const followRef = useRef(follow)
 	const onStatsRef = useRef(onStats)
+	const onScoreRef = useRef(onScore)
 	useEffect(() => {
 		playingRef.current = playing
 	}, [playing])
@@ -44,6 +48,9 @@ export function Rider({ playing, follow, startPoint, onStats }: RiderProps) {
 	useEffect(() => {
 		onStatsRef.current = onStats
 	}, [onStats])
+	useEffect(() => {
+		onScoreRef.current = onScore
+	}, [onScore])
 
 	// Snap the sled to the start point whenever the start point moves (so "set
 	// start here" gives immediate feedback even while stopped), and re-seat it at
@@ -64,6 +71,9 @@ export function Rider({ playing, follow, startPoint, onStats }: RiderProps) {
 		let acc = 0
 		let frameCount = 0
 		let segments = collectSegments(editor)
+		let checkpoints: Checkpoint[] = collectCheckpoints(editor)
+		// Ids collected this run; reset when a run begins so flags re-arm.
+		let collected = new Set<string>()
 
 		// Re-snapshot collision geometry each time a run begins.
 		let wasPlaying = false
@@ -72,6 +82,9 @@ export function Rider({ playing, follow, startPoint, onStats }: RiderProps) {
 			const isPlaying = playingRef.current
 			if (isPlaying && !wasPlaying) {
 				segments = collectSegments(editor)
+				checkpoints = collectCheckpoints(editor)
+				collected = new Set<string>()
+				onScoreRef.current(0, checkpoints.length)
 				last = now
 				acc = 0
 				frameCount = 0 // restart stats cadence so the first run frame samples predictably
@@ -83,10 +96,19 @@ export function Rider({ playing, follow, startPoint, onStats }: RiderProps) {
 				last = now
 				if (frame > 0.05) frame = 0.05 // avoid spiral-of-death after tab blur
 				acc += frame
+				let scored = false
 				while (acc >= FIXED_DT) {
 					step(stateRef.current, segments, FIXED_DT)
+					// Test checkpoints per substep so a fast sled can't tunnel past a
+					// flag between rendered frames. collectCheckpointHits mutates
+					// `collected` so each flag scores once.
+					if (checkpoints.length > 0) {
+						const hits = collectCheckpointHits(stateRef.current.pos, checkpoints, collected)
+						if (hits.length > 0) scored = true
+					}
 					acc -= FIXED_DT
 				}
+				if (scored) onScoreRef.current(collected.size, checkpoints.length)
 				if (++frameCount % STATS_EVERY === 0) {
 					const p = stateRef.current.pos
 					const d = Math.hypot(p.x - startRef.current.x, p.y - startRef.current.y)
