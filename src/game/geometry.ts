@@ -33,6 +33,14 @@ const COLOR_TO_KIND: Record<string, KindSpec> = {
 
 const DEFAULT_SPEC: KindSpec = { kind: 'solid', strength: 1 }
 
+// Only these native shape types become collision track. Everything else (text,
+// image, video, frame, embed, bookmark, note, highlight, …) is treated as
+// scenery — it would otherwise act as an invisible solid wall, since those
+// shapes carry no track-meaningful color. An allowlist (not a denylist) means a
+// future tldraw shape type is non-collidable by default rather than a surprise
+// wall. These four are the shapes whose geometry reads as a ridable line/path.
+const COLLIDABLE_TYPES = new Set(['draw', 'line', 'geo', 'arrow'])
+
 /** A page-space collision segment with a definite gameplay kind. */
 export interface TrackSegment extends Segment {
 	kind: LineKind
@@ -46,14 +54,16 @@ function specOf(shape: TLShape): KindSpec {
 }
 
 /**
- * Convert every shape on the current page into page-space collision segments.
+ * Convert collidable shapes on the current page into page-space collision
+ * segments.
  *
  * For each shape we ask tldraw for its geometry (LOCAL coords), read the
  * outline `vertices`, and transform them to page space with the shape's page
  * transform. Consecutive vertices become segments. This works uniformly for
  * native draw strokes, geo shapes, lines, arrows, etc. — no custom shape type.
  *
- * Scenery-colored shapes are excluded (decorative, non-collidable).
+ * Skipped: non-track shape types (see COLLIDABLE_TYPES) and scenery-colored
+ * shapes — both decorative / non-collidable.
  */
 export function collectSegments(editor: Editor): TrackSegment[] {
 	// Read geometry inside a transaction so tldraw's reactive computed caches
@@ -72,6 +82,10 @@ function collectSegmentsNow(editor: Editor): TrackSegment[] {
 	const segments: TrackSegment[] = []
 
 	for (const shape of editor.getCurrentPageShapes()) {
+		// Skip non-track shape types (text/image/frame/…) so they don't act as
+		// invisible walls, independent of color.
+		if (!COLLIDABLE_TYPES.has(shape.type)) continue
+
 		const { kind, strength } = specOf(shape)
 		if (kind === 'scenery') continue
 

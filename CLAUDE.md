@@ -57,6 +57,9 @@ native shapes over inventing custom records.
   `~2 * riderRadius / FIXED_DT`, or the sled shoots through thin lines in one
   step. `accelerateMaxSpeed` is the existing cap; copy that pattern.
 - **New physics tunables go in the `PHYSICS` object**, not as inline literals.
+- **Only `COLLIDABLE_TYPES` shapes are track.** `collectSegments` allowlists
+  `draw`/`line`/`geo`/`arrow`; text, images, frames, etc. are skipped so they
+  don't act as invisible walls. To make a new shape type ridable, add it there.
 
 ## Adding a line behavior (color → kind)
 

@@ -3,19 +3,17 @@
 Living design/roadmap doc. Code-confirmed facts live in the README; this file
 holds decisions and not-yet-built plans.
 
-## Open decisions
+## Resolved decisions
 
-### Unmapped colors collide as solid (current behavior)
+### Which shapes are track (resolved)
 
-`kindOf` in [src/game/geometry.ts](src/game/geometry.ts) defaults any shape
-whose color isn't in `COLOR_TO_KIND` to `'solid'`, and `collectSegments` pulls
-in every non-scenery shape on the page. Consequence: text, images, frames, etc.
-act as solid collision geometry (invisible walls).
-
-**Decision:** leave it. With every color now mapped (see below), the
-default-to-solid fallback only ever applies to truly color-less shapes
-(text/image/frame), which behave as basic solid track. This keeps the
-native-first contract simple: "anything not opted out (scenery-green) is track."
+Originally any non-scenery shape on the page collided, so text / images /
+frames acted as invisible solid walls. **Resolved:** `collectSegments` now
+gates on a `COLLIDABLE_TYPES` allowlist (`draw`, `line`, `geo`, `arrow`) in
+[src/game/geometry.ts](src/game/geometry.ts); every other shape type is treated
+as scenery (non-collidable). An allowlist (not a denylist) keeps any future
+tldraw shape type non-collidable by default. Color still selects behavior
+*within* those collidable types; a colorless collidable shape defaults to solid.
 
 ## Color → behavior: all 13 tldraw colors (shipped)
 
@@ -65,9 +63,6 @@ Per-kind tunables (`brakeDrag`, `bounceRestitution`, `stickyFriction`,
 
 ### Remaining follow-ups
 
-- Decide whether non-track shape *types* (text/image/frame) should be excluded
-  from collision entirely, independent of color (see "Open decisions" above).
-- A legend/UI hint so players know which color does what.
 - The light-blue one-way is currently identical to blue. PLANNING originally
   floated an "opposite-facing" variant; revisit if a second one-way direction is
   wanted (would need a per-segment facing flag, not just `strength`).
