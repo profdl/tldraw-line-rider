@@ -40,6 +40,32 @@ const COLOR_TO_KIND: Record<string, KindSpec> = {
 
 const DEFAULT_SPEC: KindSpec = { kind: 'solid', strength: 1 }
 
+// Player-facing legend for the control panel, grouped by behavior. Co-located
+// with COLOR_TO_KIND (the gameplay source of truth) so the mapping and its
+// human-readable explanation live in one file. Swatch hexes are approximate
+// tldraw v5 palette values — they only need to read as "that color" next to the
+// label; the binding that actually matters (color name -> behavior) is
+// COLOR_TO_KIND above. One-way is split into two rows because its two shades gate
+// opposite sides (blue/light-blue), and ice shows only grey (white is invisible
+// in light mode).
+export interface LegendRow {
+	label: string
+	desc: string
+	swatches: string[]
+}
+
+export const LEGEND: LegendRow[] = [
+	{ label: 'Solid', desc: 'Basic track', swatches: ['#1d1d1d'] },
+	{ label: 'Accelerate', desc: 'Speeds you up', swatches: ['#e03131', '#ff8787'] },
+	{ label: 'Brake', desc: 'Slows you down', swatches: ['#f76707'] },
+	{ label: 'Bounce', desc: 'Springy', swatches: ['#ffc034'] },
+	{ label: 'Sticky', desc: 'High grip', swatches: ['#ae3ec9', '#e599f7'] },
+	{ label: 'Ice', desc: 'Frictionless', swatches: ['#9fa8b2'] },
+	{ label: 'One-way', desc: 'Blocks from above', swatches: ['#4263eb'] },
+	{ label: 'One-way ↑', desc: 'Blocks from below', swatches: ['#74c0fc'] },
+	{ label: 'Scenery', desc: 'Non-collidable', swatches: ['#2f9e44', '#8ce99a'] },
+]
+
 // Only these native shape types become collision track. Everything else (text,
 // image, video, frame, embed, bookmark, note, highlight, …) is treated as
 // scenery — it would otherwise act as an invisible solid wall, since those

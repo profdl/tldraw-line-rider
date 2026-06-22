@@ -2,6 +2,7 @@ import { useState, useCallback } from 'react'
 import { Tldraw, type TLComponents, type Editor, useValue } from 'tldraw'
 import 'tldraw/tldraw.css'
 import { Rider } from './game/Rider'
+import { LEGEND } from './game/geometry'
 import { playingAtom, followAtom, startPointAtom, statsAtom, scoreAtom, resetNonceAtom, mutedAtom, showCollisionsAtom } from './game/state'
 import './App.css'
 
@@ -9,27 +10,38 @@ import './App.css'
 // so it has room to fall onto the track below.
 const START_DROP_ABOVE_CENTER = 150
 
-// Legend: what each draw color does, grouped by behavior. Swatch colors are
-// approximate tldraw v5 palette values (light/dark theme aside) — they only
-// need to read as "that color" next to its name. Source of truth for the
-// mapping itself is COLOR_TO_KIND in game/geometry.ts; keep these in sync.
-const LEGEND: { label: string; desc: string; swatches: string[] }[] = [
-	{ label: 'Solid', desc: 'Basic track', swatches: ['#1d1d1d'] },
-	{ label: 'Accelerate', desc: 'Speeds you up', swatches: ['#e03131', '#ff8787'] },
-	{ label: 'Brake', desc: 'Slows you down', swatches: ['#f76707'] },
-	{ label: 'Bounce', desc: 'Springy', swatches: ['#ffc034'] },
-	{ label: 'Sticky', desc: 'High grip', swatches: ['#ae3ec9', '#e599f7'] },
-	{ label: 'Ice', desc: 'Frictionless', swatches: ['#9fa8b2'] },
-	{ label: 'One-way', desc: 'Blocks from above', swatches: ['#4263eb'] },
-	{ label: 'One-way ↑', desc: 'Blocks from below', swatches: ['#74c0fc'] },
-	{ label: 'Scenery', desc: 'Non-collidable', swatches: ['#2f9e44', '#8ce99a'] },
-]
-
 // The rider overlay renders on top of the canvas. Defined once at module scope
 // (and reading its gameplay state from atoms) so its identity never changes —
 // see the comment on the atoms above.
 const components: TLComponents = {
 	InFrontOfTheCanvas: () => <Rider />,
+}
+
+// A panel button that reflects an on/off state: gets the `lr-active` class and
+// `aria-pressed` when `active`, with the title swapping to match. Collapses the
+// handful of near-identical toggle buttons (follow / mute / collisions / legend)
+// in the panel into one place.
+function ToggleButton({
+	active,
+	onClick,
+	title,
+	children,
+}: {
+	active: boolean
+	onClick: () => void
+	title: string
+	children: React.ReactNode
+}) {
+	return (
+		<button
+			className={active ? 'lr-btn lr-icon lr-active' : 'lr-btn lr-icon'}
+			title={title}
+			aria-pressed={active}
+			onClick={onClick}
+		>
+			{children}
+		</button>
+	)
 }
 
 function App() {
@@ -113,38 +125,34 @@ function App() {
 				>
 					⌖
 				</button>
-				<button
-					className={follow ? 'lr-btn lr-icon lr-active' : 'lr-btn lr-icon'}
+				<ToggleButton
+					active={follow}
 					title={follow ? 'Camera follow: on' : 'Camera follow: off'}
-					aria-pressed={follow}
 					onClick={() => followAtom.update((f) => !f)}
 				>
 					🎥
-				</button>
-				<button
-					className="lr-btn lr-icon"
+				</ToggleButton>
+				<ToggleButton
+					active={!muted}
 					title={muted ? 'Sound: off' : 'Sound: on'}
-					aria-pressed={!muted}
 					onClick={() => mutedAtom.update((m) => !m)}
 				>
 					{muted ? '🔇' : '🔊'}
-				</button>
-				<button
-					className={showCollisions ? 'lr-btn lr-icon lr-active' : 'lr-btn lr-icon'}
+				</ToggleButton>
+				<ToggleButton
+					active={showCollisions}
 					title={showCollisions ? 'Hide collision shapes' : 'Show collision shapes'}
-					aria-pressed={showCollisions}
 					onClick={() => showCollisionsAtom.update((s) => !s)}
 				>
 					◎
-				</button>
-				<button
-					className={showLegend ? 'lr-btn lr-icon lr-active' : 'lr-btn lr-icon'}
+				</ToggleButton>
+				<ToggleButton
+					active={showLegend}
 					title="Color legend"
-					aria-pressed={showLegend}
 					onClick={() => setShowLegend((s) => !s)}
 				>
 					?
-				</button>
+				</ToggleButton>
 				<span className="lr-stat">
 					<b>{Math.round(stats.distance)}</b>
 					<small>dist</small>
