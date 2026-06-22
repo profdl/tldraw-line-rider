@@ -315,21 +315,30 @@ function resolveCollisions(
 		// Renamed from the old per-iteration `lastIter`: callers decide when the
 		// once-per-step kind effects apply.
 		const lastIter = applyKindEffects
-		// Velocity-delta accumulator. Each contacted segment computes its velocity
-		// correction against the SAME base velocity (`pos - prev` at the start of
-		// this pass), and we sum the corrections, applying them to `prev` ONCE after
-		// the loop. This makes an inside corner (a point touching two segments in one
-		// pass) order-independent: with the old per-hit `prev` rewrite, the second
-		// segment damped the velocity the first segment had already corrected and the
-		// rewrite discarded the first's correction along the non-shared axes
-		// (last-writer-wins), so the final velocity depended on segment array order
-		// and could still point into a surface. Position push-out still accumulates
-		// additively on `pos` inside the loop (unchanged). Base velocity is captured
-		// up front so every segment sees the same incoming velocity.
-		const baseVX = state.pos.x - state.prev.x
-		const baseVY = state.pos.y - state.prev.y
-		let accVX = 0 // summed velocity delta across all contacted segments
-		let accVY = 0
+		// Running velocity, threaded through every contacted segment and written back
+		// to `prev` ONCE after the loop. Each segment removes the velocity component
+		// heading INTO its surface (and applies its friction / kind effect) against
+		// this running value, not the start-of-pass value.
+		//
+		// Why running, not summed-against-a-frozen-base: removing the inbound normal
+		// component is idempotent and commutative across contacts, which gives us BOTH
+		// properties we need at once:
+		//  - inside corner (two DIFFERENT normals): removing the floor's normal doesn't
+		//    touch the velocity along the wall's normal and vice-versa, so the result is
+		//    the same regardless of order — the order-independence the old per-hit `prev`
+		//    rewrite lacked (it was last-writer-wins and could leave velocity pointing
+		//    into a wall).
+		//  - coincident / parallel segments (the SAME normal, e.g. a stroke drawn over a
+		//    line): after the first removes the inbound normal velocity, the next sees
+		//    vn >= 0 and the `if (vn < 0)` guard skips it — so N overlapping lines don't
+		//    each subtract another (1+e)|vn| and rocket the point off the surface.
+		// Summing per-segment deltas against a frozen base did the corner right but
+		// double-counted the parallel case (the bug a coincident-floor test caught).
+		// Position push-out still accumulates additively on `pos` inside the loop, but
+		// self-limits: sweptContact is re-evaluated per segment against the already
+		// pushed-out `pos`, so a redundant parallel contact finds ~zero penetration.
+		let vX = state.pos.x - state.prev.x
+		let vY = state.pos.y - state.prev.y
 		let anyHit = false
 		for (const seg of segments) {
 			// Swept detection: catches a fast point that crossed a thin line this
@@ -377,13 +386,11 @@ function resolveCollisions(
 				else if (seg.kind === 'sticky') tangentFriction = PHYSICS.stickyFriction * strength
 				else tangentFriction = PHYSICS.surfaceFriction
 
-				// Compute this segment's velocity correction against the SHARED base
-				// velocity (not a velocity another segment already modified). The
-				// per-segment delta (corrected - base) is summed; we never touch
-				// `prev` here. dVX/dVY start as the base velocity and become the
-				// segment's corrected velocity, then we accumulate (corrected - base).
-				let vX = baseVX
-				let vY = baseVY
+				// Correct the RUNNING velocity in place (see the block comment above):
+				// remove the inbound normal component and apply this surface's friction
+				// and kind effect. Threading the running value — instead of recomputing
+				// from a frozen base each segment — is what makes coincident contacts
+				// idempotent while keeping orthogonal (corner) contacts order-independent.
 				const vn = vX * nx + vY * ny // velocity along normal
 				if (vn < 0) {
 					vX -= (1 + restitution) * vn * nx
@@ -417,10 +424,6 @@ function resolveCollisions(
 					vY -= tY * drag
 				}
 
-				// Accumulate this segment's velocity delta; applied to `prev` once
-				// after the loop so corner contacts compose order-independently.
-				accVX += vX - baseVX
-				accVY += vY - baseVY
 				anyHit = true
 
 				// Report the contact for the audio layer (only on the kind-effect pass,
@@ -437,13 +440,24 @@ function resolveCollisions(
 				}
 			}
 		}
-		// Apply the summed velocity correction once. `pos` already moved by the
-		// accumulated push-out above; setting prev = pos - (base + acc) installs the
-		// combined velocity. Single-contact behavior is unchanged (acc == the one
-		// segment's delta), so step()'s unit-test path is preserved.
+		// Install the corrected running velocity once. `pos` already moved by the
+		// (self-limiting) push-out above; prev = pos - v sets the velocity to the
+		// post-contact value.
+		//
+		// One deliberate divergence from the old per-hit prev-rewrite: that code read
+		// the contact velocity from `pos - prev` AFTER the push-out moved `pos`, folding
+		// the positional correction into the measured velocity. We thread the velocity
+		// captured BEFORE the push-out instead (a push-out is a position constraint, not
+		// a kinematic velocity). For restitution == 0 — every gameplay path: all
+		// solid/ice/sticky/brake/accelerate lines, and ALL body points (stepBody passes
+		// suppressBounce=true) — single-contact results are identical to the old code.
+		// They differ only for the single-point step() hitting a bounce line
+		// (restitution > 0): the new rebound is a touch stronger. That path is test-only
+		// — the game bounces at the body level — and the existing bounce test asserts a
+		// relative (bounce > solid) rebound, which still holds.
 		if (anyHit) {
-			state.prev.x = state.pos.x - (baseVX + accVX)
-			state.prev.y = state.pos.y - (baseVY + accVY)
+			state.prev.x = state.pos.x - vX
+			state.prev.y = state.pos.y - vY
 		}
 	}
 }

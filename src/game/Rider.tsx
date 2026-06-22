@@ -249,10 +249,10 @@ export function Rider() {
 		// view (recomputes only when shapes change) so the overlay reflects track
 		// edits live without re-walking the page every frame. While playing we draw
 		// the same frozen `segments` the sim is running against, so the overlay
-		// matches what the sled actually hits. The
-		// rig circles are the body points drawn at PHYSICS.bodyRadius — the real
-		// contact surface, which is larger than the visible snail. We build the DOM
-		// once and mutate it; toggling off just hides the group.
+		// matches what the sled actually hits. The rig circles are the body points
+		// drawn at PHYSICS.bodyRadius — the real contact surface, which is larger
+		// than the visible snail. We build the DOM once and mutate it; toggling off
+		// just hides the group.
 		let debugWasOn = false
 
 		const tick = (now: number) => {

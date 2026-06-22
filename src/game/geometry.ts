@@ -61,43 +61,13 @@ function specOf(shape: TLShape): KindSpec {
 }
 
 /**
- * Convert collidable shapes on the current page into page-space collision
- * segments.
- *
- * For each shape we ask tldraw for its geometry (LOCAL coords), read the
- * outline `vertices`, and transform them to page space with the shape's page
- * transform. Consecutive vertices become segments. This works uniformly for
- * native draw strokes, geo shapes, lines, arrows, etc. — no custom shape type.
- *
- * Skipped: non-track shape types (see COLLIDABLE_TYPES) and scenery-colored
- * shapes — both decorative / non-collidable.
- */
-export function collectSegments(editor: Editor): TrackSegment[] {
-	// Batch all the geometry/transform reads into one transaction frame so they
-	// don't interleave with concurrent reactions mid-collect. history:'ignore'
-	// keeps the (empty) transaction off the undo stack.
-	//
-	// NOTE: tldraw's geometry/transform caches (getShapeGeometry /
-	// getShapePageTransform) are reactive computeds that invalidate automatically
-	// when a shape's props change (epoch-based) — the transaction does NOT force a
-	// recompute. The freshness bug this used to hit was caused by passing the
-	// enumerated *snapshot* object to those calls instead of the shape *id*; the
-	// fix is to pass shape.id (see collectSegmentsNow below), which is what makes
-	// the cache resolve against the live record.
-	let result: TrackSegment[] = []
-	editor.run(() => {
-		result = collectSegmentsNow(editor)
-	}, { history: 'ignore' })
-	return result
-}
-
-/**
  * A reactive view of the track segments, bound to one editor. Reading `.get()`
  * recomputes only when the page's shapes change (tldraw memoizes the computed by
  * its reactive dependencies), so the rAF loop can read it every frame without
  * re-walking the whole page each time. Used by the live debug overlay (which
  * needs the track to reflect edits while stopped) and as the gameplay snapshot
- * source at run start. Create one per editor and reuse it.
+ * source at run start (read `.get()` once to freeze the track for the run).
+ * Create one per editor and reuse it.
  */
 export function makeSegmentsComputed(editor: Editor): Computed<TrackSegment[]> {
 	return computed('lr-track-segments', () => collectSegmentsNow(editor))
@@ -108,6 +78,27 @@ export function makeCheckpointsComputed(editor: Editor): Computed<Checkpoint[]> 
 	return computed('lr-checkpoints', () => collectCheckpointsNow(editor))
 }
 
+/**
+ * Convert collidable shapes on the current page into page-space collision
+ * segments.
+ *
+ * For each shape we ask tldraw for its geometry (LOCAL coords), read the
+ * outline `vertices`, and transform them to page space with the shape's page
+ * transform. Consecutive vertices become segments. This works uniformly for
+ * native draw strokes, geo shapes, lines, arrows, etc. — no custom shape type.
+ *
+ * Skipped: non-track shape types (see COLLIDABLE_TYPES) and scenery-colored
+ * shapes — both decorative / non-collidable.
+ *
+ * NOTE on freshness: tldraw's geometry/transform caches (getShapeGeometry /
+ * getShapePageTransform) are reactive computeds that invalidate automatically
+ * when a shape's props change (epoch-based). The freshness bug this used to hit
+ * was caused by passing the enumerated *snapshot* object to those calls instead
+ * of the shape *id*; passing shape.id (below) is what makes the cache resolve
+ * against the live record. (We deliberately do NOT wrap these reads in an
+ * editor.run transaction — a transaction does not force a recompute, and reads
+ * inside a `computed` are tracked as dependencies on their own.)
+ */
 function collectSegmentsNow(editor: Editor): TrackSegment[] {
 	const segments: TrackSegment[] = []
 
@@ -208,17 +199,9 @@ const CHECKPOINT_TYPE = 'note'
 
 /**
  * Collect the page-space boxes of every checkpoint (note) shape on the current
- * page. Reads are batched in editor.run(history:'ignore') for the same reason as
- * collectSegments (see the note there about the caches being reactive).
+ * page. Backs makeCheckpointsComputed; see the freshness note on
+ * collectSegmentsNow about passing shape.id to the reactive caches.
  */
-export function collectCheckpoints(editor: Editor): Checkpoint[] {
-	let result: Checkpoint[] = []
-	editor.run(() => {
-		result = collectCheckpointsNow(editor)
-	}, { history: 'ignore' })
-	return result
-}
-
 function collectCheckpointsNow(editor: Editor): Checkpoint[] {
 	const checkpoints: Checkpoint[] = []
 	for (const shape of editor.getCurrentPageShapes()) {

@@ -295,6 +295,9 @@ describe('physics: single-contact equivalence (refactor safety)', () => {
 	})
 
 	it('non-contacting segments and their order do not perturb the single contact', () => {
+		// Non-contacting segments are skipped before any velocity math, so this is a
+		// guard against the contact LOOP picking up spurious hits — not against the
+		// delta-accumulation itself (the duplicate-floor test below covers that).
 		const base = sliding()
 		step(base, [floor], DT)
 		for (const segs of [
@@ -309,6 +312,27 @@ describe('physics: single-contact equivalence (refactor safety)', () => {
 			expect(r.prev.x).toBeCloseTo(base.prev.x, 9)
 			expect(r.prev.y).toBeCloseTo(base.prev.y, 9)
 		}
+	})
+
+	it('two coincident floor segments (both contacted) do not double-eject or gain energy', () => {
+		// Two identical floors at the same place: the point contacts BOTH in one pass,
+		// so the delta-accumulation runs for real (unlike the non-contacting case). The
+		// summed push-out must not fling the point far above the surface, and the summed
+		// velocity correction must not gain energy vs. the single-floor result — it
+		// should land at essentially the same rest as one floor (the second coincident
+		// contact is redundant, not additive energy).
+		const one = sliding()
+		step(one, [floor], DT)
+		const two = sliding()
+		step(two, [floor, { ...floor }], DT)
+		const vOne = velocity(one, DT)
+		const vTwo = velocity(two, DT)
+		// Not ejected upward by a doubled push-out: y stays within the contact band of
+		// the surface (around -riderRadius), not flung far above it.
+		expect(two.pos.y).toBeGreaterThan(-PHYSICS.riderRadius - PHYSICS.contactSkin - 1e-6)
+		expect(two.pos.y).toBeLessThan(1e-6)
+		// No energy gain: the two-floor speed must not exceed the one-floor speed.
+		expect(Math.hypot(vTwo.x, vTwo.y)).toBeLessThanOrEqual(Math.hypot(vOne.x, vOne.y) + 1e-6)
 	})
 })
 

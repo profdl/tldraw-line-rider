@@ -103,12 +103,13 @@ native shapes over inventing custom records.
   change (epoch-based). The freshness bug we hit — stale geometry after dragging a
   shape — was caused by passing the *enumerated snapshot object* to these calls;
   passing `shape.id` makes the cache resolve against the live record and fixes it.
-  We batch the per-collect reads in `editor.run(..., { history: 'ignore' })` so
-  they don't interleave with concurrent reactions, but the transaction does **not**
-  force a cache recompute — invalidation is automatic. Prefer the reactive
-  `makeSegmentsComputed` / `makeCheckpointsComputed` views (read `.get()`) over
-  re-walking the page each frame: they only recompute when shapes change. See
-  `collectSegments` / `makeSegmentsComputed` in geometry.ts.
+  An `editor.run(..., { history: 'ignore' })` transaction does **not** force a
+  cache recompute — invalidation is automatic and reads inside a `computed` are
+  tracked as dependencies on their own. So the track is exposed as reactive
+  `makeSegmentsComputed` / `makeCheckpointsComputed` views: read `.get()` (every
+  frame for the live debug overlay; once at run start to freeze the gameplay
+  snapshot) and they only recompute when shapes change. See `collectSegmentsNow`
+  / `makeSegmentsComputed` in geometry.ts.
 - **Draw (pencil) shapes hold multiple strokes** separated by pen-lifts. Decode
   each stroke with `getPointsFromDrawSegment` and push it separately — never
   bridge across strokes or you draw phantom collision lines.
@@ -127,7 +128,7 @@ native shapes over inventing custom records.
   `~2 * riderRadius / FIXED_DT`; `accelerateMaxSpeed` is the existing cap — copy
   that pattern rather than relying on the swept test alone.
 - **New physics tunables go in the `PHYSICS` object**, not as inline literals.
-- **Only `COLLIDABLE_TYPES` shapes are track.** `collectSegments` allowlists
+- **Only `COLLIDABLE_TYPES` shapes are track.** `collectSegmentsNow` allowlists
   `draw`/`line`/`geo`/`arrow`; text, images, frames, etc. are skipped so they
   don't act as invisible walls. To make a new shape type ridable, add it there.
 
