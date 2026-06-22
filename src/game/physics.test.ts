@@ -270,7 +270,7 @@ describe('physics: inside-corner collision (order-independent)', () => {
 		expect(a.prev.y).toBeCloseTo(b.prev.y, 9)
 	})
 
-	// The sum-of-deltas refactor must not gain energy at a corner: a point wedged
+	// The multi-contact resolution must not gain energy at a corner: a point wedged
 	// into an inside corner under gravity must settle (not bounce/jitter/explode)
 	// over many steps. Guards against the "summing two segments' corrections
 	// double-counts an impulse" concern.
@@ -292,14 +292,14 @@ describe('physics: inside-corner collision (order-independent)', () => {
 })
 
 describe('physics: single-contact equivalence (refactor safety)', () => {
-	// The sum-of-deltas refactor in resolveCollisions claims that for a SINGLE contact
-	// the accumulator equals the one segment's delta, so the resolved velocity is the
-	// same as the pre-refactor per-hit prev rewrite. Rather than hand-compute the
-	// 2-iteration solver's exact value (brittle), we lock the equivalence directly: a
-	// single floor segment must produce the IDENTICAL pos/prev as that floor placed in
-	// a list where the only OTHER segments are ones the point never contacts. If the
-	// accumulation were wrong, the presence of non-contacting segments (or the order)
-	// would perturb the single real contact's result. It must not.
+	// The running-velocity resolution in resolveCollisions must, for a SINGLE contact,
+	// produce the same result as the pre-refactor per-hit prev rewrite (one segment ->
+	// one normal-removal). Rather than hand-compute the 2-iteration solver's exact value
+	// (brittle), we lock the equivalence directly: a single floor segment must produce
+	// the IDENTICAL pos/prev as that floor placed in a list where the only OTHER segments
+	// are ones the point never contacts. If the contact loop were wrong, the presence of
+	// non-contacting segments (or the order) would perturb the single real contact's
+	// result. It must not.
 	const floor: Segment = { a: { x: -100, y: 0 }, b: { x: 100, y: 0 } }
 	const farAbove: Segment = { a: { x: -100, y: -500 }, b: { x: 100, y: -500 } } // never touched
 	const farBelow: Segment = { a: { x: -100, y: 500 }, b: { x: 100, y: 500 } } // never touched
@@ -340,11 +340,11 @@ describe('physics: single-contact equivalence (refactor safety)', () => {
 
 	it('two coincident floor segments (both contacted) do not double-eject or gain energy', () => {
 		// Two identical floors at the same place: the point contacts BOTH in one pass,
-		// so the delta-accumulation runs for real (unlike the non-contacting case). The
-		// summed push-out must not fling the point far above the surface, and the summed
-		// velocity correction must not gain energy vs. the single-floor result — it
-		// should land at essentially the same rest as one floor (the second coincident
-		// contact is redundant, not additive energy).
+		// so the multi-contact loop runs for real (unlike the non-contacting case). The
+		// push-out must not fling the point far above the surface, and the running-velocity
+		// correction must not gain energy vs. the single-floor result — the second
+		// coincident contact sees vn >= 0 and is skipped, so it lands at essentially the
+		// same rest as one floor (redundant contact, not additive energy).
 		const one = sliding()
 		step(one, [floor], DT)
 		const two = sliding()

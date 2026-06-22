@@ -82,7 +82,7 @@ at half strength (a weaker version of the same effect).
 - **Scoring** *(done)*: drop **sticky-note shapes** as flags; the sled collects
   each the first time it passes through, and the panel shows a `collected/total`
   count. See [checkpoints.ts](src/game/checkpoints.ts) (pure hit-test) and
-  `collectCheckpoints` in [geometry.ts](src/game/geometry.ts).
+  `makeCheckpointsComputed` in [geometry.ts](src/game/geometry.ts).
 - **Camera follow** *(done)*: the rAF loop in [Rider.tsx](src/game/Rider.tsx)
   eases the viewport center toward the sled while playing (toggle with the 🎥
   button). Lerped, not snapped, and run with `history: 'ignore'`.
