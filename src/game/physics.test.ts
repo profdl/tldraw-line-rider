@@ -206,6 +206,160 @@ describe('physics: swept collision (no tunneling)', () => {
 	})
 })
 
+describe('physics: inside-corner collision (order-independent)', () => {
+	// An inside 90deg corner: a floor (horizontal) and a wall (vertical) meeting at
+	// the origin, like the interior seam of a box. A point dropped into the corner
+	// contacts BOTH segments in one pass. The resolved velocity must not point INTO
+	// either surface, and must not depend on the array order of the two segments
+	// (the last-writer-wins prev-rewrite bug).
+	const floor: Segment = { a: { x: -100, y: 0 }, b: { x: 100, y: 0 } } // surface above it (normal up)
+	const wall: Segment = { a: { x: 0, y: -100 }, b: { x: 0, y: 100 } } // vertical wall
+
+	// Drop a point moving down-and-right toward the corner so it presses into both
+	// the floor (from above) and the wall (from the left).
+	const cornerPoint = () => {
+		const r = makeRider({ x: -2, y: -2 })
+		r.prev = { x: -10, y: -10 } // moving +x, +y into the corner
+		return r
+	}
+
+	it('post-step velocity does not point into either wall', () => {
+		const r = cornerPoint()
+		step(r, [floor, wall], DT)
+		const v = velocity(r, DT)
+		// Floor normal is up (0,-1): outward velocity component is -v.y; "into the
+		// floor" means v.y > 0 (downward). Allow a tiny epsilon for solver residue.
+		expect(v.y).toBeLessThan(1e-6)
+		// Wall: the point came from the left (x<0), so its outward normal is (-1,0);
+		// "into the wall" means v.x > 0 (rightward). Must not drive into the wall.
+		expect(v.x).toBeLessThan(1e-6)
+	})
+
+	it('resulting pos and prev are identical regardless of segment array order', () => {
+		const a = cornerPoint()
+		step(a, [floor, wall], DT)
+		const b = cornerPoint()
+		step(b, [wall, floor], DT)
+		expect(a.pos.x).toBeCloseTo(b.pos.x, 9)
+		expect(a.pos.y).toBeCloseTo(b.pos.y, 9)
+		expect(a.prev.x).toBeCloseTo(b.prev.x, 9)
+		expect(a.prev.y).toBeCloseTo(b.prev.y, 9)
+	})
+
+	// Order-independence must survive the running-velocity model even when the two
+	// surfaces have DIFFERENT friction/kind and a NON-orthogonal corner with an
+	// ASYMMETRIC incoming velocity — the case where per-segment friction/kind on a
+	// running velocity could in theory reintroduce order-dependence. It doesn't,
+	// because step()'s relaxation iterations converge to the same fixed point. This
+	// is the adversarial guard for that property.
+	it('stays order-independent with mixed friction/kind at an asymmetric corner', () => {
+		const stickyFloor: Segment = { a: { x: -100, y: 0 }, b: { x: 100, y: 0 }, kind: 'sticky' }
+		const iceRamp: Segment = { a: { x: 0, y: 0 }, b: { x: -80, y: -60 }, kind: 'ice' }
+		const mk = () => {
+			const r = makeRider({ x: -3, y: -3 })
+			r.prev = { x: -12, y: -9 } // asymmetric motion into both surfaces
+			return r
+		}
+		const a = mk()
+		step(a, [stickyFloor, iceRamp], DT)
+		const b = mk()
+		step(b, [iceRamp, stickyFloor], DT)
+		expect(a.pos.x).toBeCloseTo(b.pos.x, 9)
+		expect(a.pos.y).toBeCloseTo(b.pos.y, 9)
+		expect(a.prev.x).toBeCloseTo(b.prev.x, 9)
+		expect(a.prev.y).toBeCloseTo(b.prev.y, 9)
+	})
+
+	// The multi-contact resolution must not gain energy at a corner: a point wedged
+	// into an inside corner under gravity must settle (not bounce/jitter/explode)
+	// over many steps. Guards against the "summing two segments' corrections
+	// double-counts an impulse" concern.
+	it('a point wedged in an inside corner settles (no energy gain over many steps)', () => {
+		const r = makeRider({ x: -2, y: -2 })
+		// Run long enough to reach steady state, then sample speed over a window.
+		for (let i = 0; i < 300; i++) step(r, [floor, wall], DT)
+		const before = velocity(r, DT)
+		for (let i = 0; i < 60; i++) step(r, [floor, wall], DT)
+		const after = velocity(r, DT)
+		// Settled: tiny residual speed, and not growing (energy bounded).
+		expect(Math.hypot(after.x, after.y)).toBeLessThan(2)
+		expect(Math.hypot(after.x, after.y)).toBeLessThanOrEqual(Math.hypot(before.x, before.y) + 1e-6)
+		// And it stays out of both surfaces (x <= ~0 against the wall, y <= ~0 on the floor),
+		// within the contact band.
+		expect(r.pos.x).toBeLessThan(PHYSICS.riderRadius + PHYSICS.contactSkin + 1e-6)
+		expect(r.pos.y).toBeLessThan(PHYSICS.riderRadius + PHYSICS.contactSkin + 1e-6)
+	})
+})
+
+describe('physics: single-contact equivalence (refactor safety)', () => {
+	// The running-velocity resolution in resolveCollisions must, for a SINGLE contact,
+	// produce the same result as the pre-refactor per-hit prev rewrite (one segment ->
+	// one normal-removal). Rather than hand-compute the 2-iteration solver's exact value
+	// (brittle), we lock the equivalence directly: a single floor segment must produce
+	// the IDENTICAL pos/prev as that floor placed in a list where the only OTHER segments
+	// are ones the point never contacts. If the contact loop were wrong, the presence of
+	// non-contacting segments (or the order) would perturb the single real contact's
+	// result. It must not.
+	const floor: Segment = { a: { x: -100, y: 0 }, b: { x: 100, y: 0 } }
+	const farAbove: Segment = { a: { x: -100, y: -500 }, b: { x: 100, y: -500 } } // never touched
+	const farBelow: Segment = { a: { x: -100, y: 500 }, b: { x: 100, y: 500 } } // never touched
+
+	const sliding = () => {
+		const r = makeRider({ x: 0, y: -PHYSICS.riderRadius })
+		r.prev = { x: -2, y: -PHYSICS.riderRadius - 2 } // moving +x (tangent), +y (into floor)
+		return r
+	}
+
+	it('normal velocity is removed and tangent is preserved (near-frictionless)', () => {
+		const r = sliding()
+		step(r, [floor], DT)
+		const v = velocity(r, DT)
+		expect(v.y).toBeLessThanOrEqual(1e-6) // not driving into the floor
+		expect(v.x).toBeGreaterThan(0) // tangent kept (lines are near-frictionless)
+	})
+
+	it('non-contacting segments and their order do not perturb the single contact', () => {
+		// Non-contacting segments are skipped before any velocity math, so this is a
+		// guard against the contact LOOP picking up spurious hits — not against the
+		// delta-accumulation itself (the duplicate-floor test below covers that).
+		const base = sliding()
+		step(base, [floor], DT)
+		for (const segs of [
+			[farAbove, floor, farBelow],
+			[farBelow, farAbove, floor],
+			[floor, farAbove, farBelow],
+		]) {
+			const r = sliding()
+			step(r, segs, DT)
+			expect(r.pos.x).toBeCloseTo(base.pos.x, 9)
+			expect(r.pos.y).toBeCloseTo(base.pos.y, 9)
+			expect(r.prev.x).toBeCloseTo(base.prev.x, 9)
+			expect(r.prev.y).toBeCloseTo(base.prev.y, 9)
+		}
+	})
+
+	it('two coincident floor segments (both contacted) do not double-eject or gain energy', () => {
+		// Two identical floors at the same place: the point contacts BOTH in one pass,
+		// so the multi-contact loop runs for real (unlike the non-contacting case). The
+		// push-out must not fling the point far above the surface, and the running-velocity
+		// correction must not gain energy vs. the single-floor result — the second
+		// coincident contact sees vn >= 0 and is skipped, so it lands at essentially the
+		// same rest as one floor (redundant contact, not additive energy).
+		const one = sliding()
+		step(one, [floor], DT)
+		const two = sliding()
+		step(two, [floor, { ...floor }], DT)
+		const vOne = velocity(one, DT)
+		const vTwo = velocity(two, DT)
+		// Not ejected upward by a doubled push-out: y stays within the contact band of
+		// the surface (around -riderRadius), not flung far above it.
+		expect(two.pos.y).toBeGreaterThan(-PHYSICS.riderRadius - PHYSICS.contactSkin - 1e-6)
+		expect(two.pos.y).toBeLessThan(1e-6)
+		// No energy gain: the two-floor speed must not exceed the one-floor speed.
+		expect(Math.hypot(vTwo.x, vTwo.y)).toBeLessThanOrEqual(Math.hypot(vOne.x, vOne.y) + 1e-6)
+	})
+})
+
 describe('physics: accelerate lines', () => {
 	const flat = (kind?: Segment['kind']): Segment => ({
 		a: { x: -1000, y: 50 },
@@ -532,6 +686,23 @@ describe('physics: multi-point body', () => {
 		expect(apex('bounce')).toBeLessThan(apex('solid'))
 	})
 
+	it('rebounds off a bounce line even when crossing it FAST in one substep', () => {
+		// Lock-in for swept bounce detection: a body crossing a bounce line so fast it
+		// jumps clean past the proximity contact band in a single substep must STILL be
+		// detected as a bounce and rebound. With proximity-only detection the body
+		// tunnels past the band, gets caught by resolveCollisions (suppressBounce=true)
+		// as a dead wall, and keeps moving DOWN (no rebound). Runner spawns right at the
+		// line and is slammed ~12000 px/s downward, so one integrate lands it ~100px
+		// past the line — far beyond the ~20.75px band.
+		const floor: Segment = { a: { x: -1000, y: 50 }, b: { x: 1000, y: 50 }, kind: 'bounce' }
+		const body = makeBody({ x: 0, y: 50 }) // runner exactly on the line
+		for (const p of body.points) p.prev.y = p.pos.y - 100 // huge downward step
+		stepBody(body, [floor], DT)
+		// After a real bounce the body's center is moving back UP (outbound, vy<0),
+		// not still driving down through a dead wall.
+		expect(bodyVelocity(body, DT).y).toBeLessThan(0)
+	})
+
 	it('slides and rotates down a slope (a point sled cannot rotate)', () => {
 		const slope: Segment = { a: { x: -300, y: -100 }, b: { x: 300, y: 200 } }
 		const body = makeBody({ x: -200, y: -120 })
@@ -618,6 +789,50 @@ describe('physics: sled rig (upright + crash)', () => {
 		expect(body.crashed).toBe(false)
 		const midy = (body.points[0].pos.y + body.points[1].pos.y) / 2
 		expect(body.points[2].pos.y).toBeLessThan(midy) // mast still above
+	})
+
+	it('settles to a stable upright rest on a flat line (energy decays)', () => {
+		// Lock-in for the applyUpright call-count fix: dropping the body onto a flat
+		// solid line must SETTLE — the center stops descending, velocity decays toward
+		// zero, the mast stays above the runner, and the constraints stay near rest.
+		// This characterizes "settles upright" and must hold before and after the fix.
+		const floor: Segment = { a: { x: -1000, y: 50 }, b: { x: 1000, y: 50 } }
+		const body = makeBody({ x: 0, y: -40 })
+		runBody(body, [floor], 300) // let it come to rest
+		const midY = (body.points[BACK].pos.y + body.points[FRONT].pos.y) / 2
+		const yAtRest = bodyCenter(body).y
+		runBody(body, [floor], 300) // run another 300 steps
+		// Center did not keep descending (settled, not slowly sinking through).
+		expect(bodyCenter(body).y).toBeLessThan(yAtRest + 1)
+		// Velocity has decayed to near zero (no latent energy pumping the rig).
+		expect(Math.hypot(bodyVelocity(body, DT).x, bodyVelocity(body, DT).y)).toBeLessThan(5)
+		// Mast still above the runner (upright, not inverted/collapsed).
+		expect(body.points[MAST].pos.y).toBeLessThan(midY)
+		expect(body.crashed).toBe(false)
+		// Constraints held within tolerance of rest length.
+		const rest = makeBody({ x: 0, y: -40 }).constraints.map((c) => c.rest)
+		body.constraints.forEach((c, idx) => {
+			const len = Math.hypot(
+				body.points[c.i].pos.x - body.points[c.j].pos.x,
+				body.points[c.i].pos.y - body.points[c.j].pos.y
+			)
+			expect(Math.abs(len - rest[idx]) / rest[idx]).toBeLessThan(0.15)
+		})
+	})
+
+	it('tracks the slope angle after settling on a sloped line', () => {
+		// Lock-in for the applyUpright fix: after settling on a slope the runner must
+		// align to the slope angle (it "tracks the slope"), not sit flat or tumble.
+		// Long slope so the body stays on it for the whole window (a finite slope lets
+		// it ride off the end and free-fall, which is correct but not what we measure).
+		// Spawn ~70px above the surface so it lands gently and tracks, like the
+		// existing "rides a slope" test (a harder drop spins out on landing).
+		const slope: Segment = { a: { x: -600, y: -300 }, b: { x: 600, y: 300 } }
+		const slopeAngle = Math.atan2(600, 1200)
+		const body = makeBody({ x: -400, y: -270 }) // slope-y at x=-400 is -200
+		runBody(body, [slope], 200)
+		expect(body.crashed).toBe(false)
+		expect(Math.abs(bodyAngle(body) - slopeAngle)).toBeLessThan(0.3)
 	})
 
 	it('crashes (ragdolls) when launched off a ramp and over-rotates', () => {
@@ -712,6 +927,20 @@ describe('physics: facing (which way the snail points)', () => {
 		setVel(body, FRONT, 0, 200)
 		expect(bodyFacing(body, DT, 8, 1)).toBe(1)
 		expect(bodyFacing(body, DT, 8, -1)).toBe(-1)
+	})
+
+	it('holds facing on a steep (~88deg) near-vertical runner instead of flipping', () => {
+		// The runner is nearly vertical (cos(angle) tiny but nonzero). With the old
+		// EPSILON guard the tiny cos sign still flipped the facing; with the
+		// facingVerticalCos tunable the near-edge-on art HOLDS rather than snapping.
+		const angle = (88 * Math.PI) / 180 // ~88deg, cos ~ +0.035 (well under threshold)
+		const body = makeBody({ x: 0, y: 0 })
+		orientRunner(body, angle)
+		setVel(body, BACK, 100, 0) // moving right; sign(vx)=+, sign(cos)=+ would give +1
+		setVel(body, FRONT, 100, 0)
+		// Held at the previous value rather than snapping on the tiny cos sign.
+		expect(bodyFacing(body, DT, 8, -1)).toBe(-1)
+		expect(bodyFacing(body, DT, 8, 1)).toBe(1)
 	})
 
 	it('ignores the mast: its wobble cannot flip the facing at low speed', () => {

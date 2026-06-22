@@ -97,12 +97,19 @@ native shapes over inventing custom records.
   it would remount `Rider` and reset its rAF loop mid-ride. That state lives in
   atoms (state.ts) instead; the overlay reads/writes them, App mirrors with
   `useValue`.
-- **Read geometry inside `editor.run(..., { history: 'ignore' })`.** tldraw's
-  geometry/transform caches (`getShapeGeometry`, `getShapePageTransform`) are
-  reactive computeds; read cold from a bare rAF callback they can return
-  pre-move values, silently breaking collision after a shape is dragged. See the
-  comment in `collectSegments`. Also pass the shape **id** to those calls, not
-  the enumerated snapshot object.
+- **Pass the shape *id* (not the snapshot object) to geometry/transform reads,
+  and read them reactively.** tldraw's `getShapeGeometry` / `getShapePageTransform`
+  are reactive computeds that invalidate **automatically** when a shape's props
+  change (epoch-based). The freshness bug we hit — stale geometry after dragging a
+  shape — was caused by passing the *enumerated snapshot object* to these calls;
+  passing `shape.id` makes the cache resolve against the live record and fixes it.
+  An `editor.run(..., { history: 'ignore' })` transaction does **not** force a
+  cache recompute — invalidation is automatic and reads inside a `computed` are
+  tracked as dependencies on their own. So the track is exposed as reactive
+  `makeSegmentsComputed` / `makeCheckpointsComputed` views: read `.get()` (every
+  frame for the live debug overlay; once at run start to freeze the gameplay
+  snapshot) and they only recompute when shapes change. See `collectSegmentsNow`
+  / `makeSegmentsComputed` in geometry.ts.
 - **Draw (pencil) shapes hold multiple strokes** separated by pen-lifts. Decode
   each stroke with `getPointsFromDrawSegment` and push it separately — never
   bridge across strokes or you draw phantom collision lines.
@@ -121,7 +128,7 @@ native shapes over inventing custom records.
   `~2 * riderRadius / FIXED_DT`; `accelerateMaxSpeed` is the existing cap — copy
   that pattern rather than relying on the swept test alone.
 - **New physics tunables go in the `PHYSICS` object**, not as inline literals.
-- **Only `COLLIDABLE_TYPES` shapes are track.** `collectSegments` allowlists
+- **Only `COLLIDABLE_TYPES` shapes are track.** `collectSegmentsNow` allowlists
   `draw`/`line`/`geo`/`arrow`; text, images, frames, etc. are skipped so they
   don't act as invisible walls. To make a new shape type ridable, add it there.
 
@@ -131,7 +138,11 @@ The kind→behavior split already exists. To add one:
 1. extend the `LineKind` union in physics.ts,
 2. add color rows to `COLOR_TO_KIND` in geometry.ts,
 3. add the per-kind branch in the collision block in `step()`,
-4. add a `physics.test.ts` case proving the effect vs. plain solid.
+4. add a `physics.test.ts` case proving the effect vs. plain solid,
+5. add a `DEBUG_KIND_COLOR` entry in Rider.tsx and a `KIND_NOTES` entry in
+   audio.ts. Both are typed `Record<LineKind, …>`, so the compiler (and a failing
+   `npm run build`) will tell you if you forget — but the audio one is a runtime
+   lookup, so don't skip it. Optionally add a `LEGEND` row in App.tsx (UI only).
 
 The full color→behavior roadmap (all 13 tldraw colors) lives in
 [PLANNING.md](PLANNING.md).

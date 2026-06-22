@@ -8,7 +8,7 @@ holds decisions and not-yet-built plans.
 ### Which shapes are track (resolved)
 
 Originally any non-scenery shape on the page collided, so text / images /
-frames acted as invisible solid walls. **Resolved:** `collectSegments` now
+frames acted as invisible solid walls. **Resolved:** `collectSegmentsNow` now
 gates on a `COLLIDABLE_TYPES` allowlist (`draw`, `line`, `geo`, `arrow`) in
 [src/game/geometry.ts](src/game/geometry.ts); every other shape type is treated
 as scenery (non-collidable). An allowlist (not a denylist) keeps any future
@@ -166,7 +166,7 @@ recipes in `KIND_VOICE` / `AUDIO` are tune-by-ear starting points.
     is in contact, so a long line hums / scrapes. Volume and/or pitch scale with
     the sled's speed (`bodyVelocity`) — a fast ride is louder / higher. Stops
     when contact ends.
-- **Scenery is silent.** Green / light-green is non-collidable (`collectSegments`
+- **Scenery is silent.** Green / light-green is non-collidable (`collectSegmentsNow`
   skips it), so the sled never contacts it and it makes no sound. Falls out of
   "sound on contact only" — no special-casing.
 
