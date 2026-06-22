@@ -21,18 +21,17 @@
 	filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.3));
 }
 
-/* Start marker: a target ring + crosshair pinned to the spawn point while
-   stopped, so the player can see (and aim) where the sled will drop from. */
+/* Start marker: a dotted ring encircling the spawn point while stopped, so the
+   player can see (and aim) where the snail will drop from. non-scaling-stroke
+   keeps the dot size constant on screen even though the group scales with zoom,
+   so the dots stay crisp while the ring tracks the snail's size. */
 .lr-start-ring {
-	fill: rgba(66, 99, 235, 0.08);
-	stroke: #4263eb;
-	stroke-width: 2;
-	stroke-dasharray: 3 3;
-}
-.lr-start-cross {
-	stroke: #4263eb;
-	stroke-width: 1.5;
-	opacity: 0.6;
+	fill: none;
+	stroke: #5fa463;
+	stroke-width: 4;
+	stroke-linecap: round;
+	stroke-dasharray: 0.1 8;
+	vector-effect: non-scaling-stroke;
 }
 
 .lr-panel {

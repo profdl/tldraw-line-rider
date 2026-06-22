@@ -74,6 +74,10 @@ export class RunController {
 	private wasPlaying = false
 	private lastStart: Vec2
 	private lastReset: number
+	// True once a run has begun and not yet been reset. Distinguishes the first
+	// play (start fresh from the spawn point) from resuming after a pause (continue
+	// the existing body). A reset / start-move clears it so the next play begins anew.
+	private runActive = false
 
 	constructor(track: TrackSource, inputs: RunInputs) {
 		this.track = track
@@ -106,7 +110,9 @@ export class RunController {
 	/**
 	 * Reconcile against this frame's inputs BEFORE stepping. Re-seats the body when
 	 * the start point moves or the reset nonce bumps (immediate feedback even while
-	 * stopped), and snapshots the track + clears run state on the play edge.
+	 * stopped, and it ends any active run so the next play starts fresh). Snapshots
+	 * the track + clears run state only on the FIRST play of a run; a play edge while
+	 * a run is already active is a resume (pause -> continue) and leaves the body be.
 	 * Returns a discriminated outcome so the loop can react (clear telemetry on a
 	 * re-seat; resume audio + publish the fresh score on a run start).
 	 */
@@ -116,12 +122,16 @@ export class RunController {
 			this.lastStart = inputs.start
 			this.lastReset = inputs.resetNonce
 			this.reseat(inputs.start)
+			this.runActive = false
 			reseated = true
 		}
 
+		// Begin a run only on the first play after a reset/start-move. Toggling play
+		// off then on while a run is active resumes it — no re-seat, no re-snapshot.
 		let runStarted = false
-		if (inputs.playing && !this.wasPlaying) {
+		if (inputs.playing && !this.wasPlaying && !this.runActive) {
 			this.beginRun(inputs.start)
+			this.runActive = true
 			runStarted = true
 		}
 		this.wasPlaying = inputs.playing

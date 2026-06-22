@@ -62,8 +62,10 @@ function App() {
 		ed.user.updateUserPreferences({ colorScheme: 'light' })
 	}, [])
 
-	// Toggle play. While playing we lock editing (read-only) and clear selection
-	// so the user can't mutate the track mid-ride; restore on stop. All native.
+	// Toggle play/pause. While playing we lock editing (read-only) and clear
+	// selection so the user can't mutate the track mid-ride; restore on pause.
+	// Pausing then playing resumes the run where it left off (only Reset starts
+	// over) — see RunController.sync. All native.
 	const togglePlay = useCallback(() => {
 		if (!editor) return
 		const next = !playingAtom.get()
@@ -102,9 +104,9 @@ function App() {
 				<button
 					className={playing ? 'lr-btn lr-stop' : 'lr-btn lr-play'}
 					onClick={togglePlay}
-					title={playing ? 'Stop' : 'Play'}
+					title={playing ? 'Pause' : 'Play'}
 				>
-					{playing ? '■' : '▶'}
+					{playing ? '❚❚' : '▶'}
 				</button>
 				<button
 					className="lr-btn lr-icon"

@@ -106,13 +106,16 @@ describe('RunController: run start snapshots the track', () => {
 		expect(c.currentSegments).toHaveLength(1)
 	})
 
-	it('re-snapshots on the next run start', () => {
+	it('re-snapshots on the next run start (after a reset)', () => {
+		const start = { x: 0, y: 0 }
 		const track = stubTrack([floor], [])
-		const c = new RunController(track, inputs())
-		c.sync(inputs({ playing: true }))
-		c.sync(inputs({ playing: false })) // stop
+		const c = new RunController(track, inputs({ start }))
+		c.sync(inputs({ start, playing: true }))
+		c.sync(inputs({ start, playing: false })) // pause
 		track.setCheckpoints([flagAt('f1', 0, 0)])
-		c.sync(inputs({ playing: true })) // play again -> fresh snapshot
+		// A reset between runs is what makes the next play a fresh run.
+		c.sync(inputs({ start, playing: false, resetNonce: 1 }))
+		c.sync(inputs({ start, playing: true, resetNonce: 1 })) // play again -> fresh snapshot
 		expect(c.currentCheckpoints).toHaveLength(1)
 	})
 
@@ -120,6 +123,65 @@ describe('RunController: run start snapshots the track', () => {
 		const c = new RunController(stubTrack([floor]), inputs())
 		expect(c.sync(inputs({ playing: true })).runStarted).toBe(true)
 		expect(c.sync(inputs({ playing: true })).runStarted).toBe(false)
+	})
+})
+
+describe('RunController: pause / resume vs. restart', () => {
+	// These tests thread ONE stable `start` object reference through every sync()
+	// call: the controller treats a new-but-equal start object as a move (identity
+	// compare, see the test above), which would spuriously re-seat and defeat the
+	// pause/resume distinction we're pinning here. A reset is modelled by bumping
+	// resetNonce while keeping the same start object.
+	it('resumes the existing body on play after a pause (no re-seat, no new run)', () => {
+		const start = { x: 0, y: 0 }
+		const c = new RunController(stubTrack([floor]), inputs({ start }))
+		c.sync(inputs({ start, playing: true })) // run begins
+		// Advance the body so it has clearly moved off the spawn.
+		for (let i = 0; i < 30; i++) c.stepFixed(DT, [])
+		const movedY = bodyCenter(c.currentBody).y
+		expect(movedY).toBeGreaterThan(0)
+
+		c.sync(inputs({ start, playing: false })) // pause
+		const resume = c.sync(inputs({ start, playing: true })) // play again
+		// A resume is NOT a new run: the body keeps its advanced position.
+		expect(resume.runStarted).toBe(false)
+		expect(resume.reseated).toBe(false)
+		expect(bodyCenter(c.currentBody).y).toBeCloseTo(movedY, 5)
+	})
+
+	it('does not re-snapshot the track on a pause/resume', () => {
+		const start = { x: 0, y: 0 }
+		const track = stubTrack([floor], [])
+		const c = new RunController(track, inputs({ start }))
+		c.sync(inputs({ start, playing: true })) // snapshot: no checkpoints
+		c.sync(inputs({ start, playing: false })) // pause
+		track.setCheckpoints([flagAt('f1', 0, 0)]) // edit while paused
+		c.sync(inputs({ start, playing: true })) // resume — must keep the frozen snapshot
+		expect(c.currentCheckpoints).toHaveLength(0)
+	})
+
+	it('starts over (re-seat + fresh run) when reset bumps between runs', () => {
+		const start = { x: 0, y: 0 }
+		const c = new RunController(stubTrack([floor]), inputs({ start }))
+		const spawnY = bodyCenter(c.currentBody).y // freshly-built body's center-y
+		c.sync(inputs({ start, playing: true }))
+		for (let i = 0; i < 30; i++) c.stepFixed(DT, [])
+		expect(bodyCenter(c.currentBody).y).toBeGreaterThan(spawnY)
+
+		c.sync(inputs({ start, playing: false, resetNonce: 1 })) // Reset to start
+		expect(bodyCenter(c.currentBody).y).toBeCloseTo(spawnY, 5) // re-seated at spawn
+		const fresh = c.sync(inputs({ start, playing: true, resetNonce: 1 }))
+		expect(fresh.runStarted).toBe(true) // a brand-new run
+	})
+
+	it('keeps resuming the same run across repeated pause/play with no reset', () => {
+		const start = { x: 0, y: 0 }
+		const c = new RunController(stubTrack([floor]), inputs({ start }))
+		expect(c.sync(inputs({ start, playing: true })).runStarted).toBe(true) // first run
+		c.sync(inputs({ start, playing: false }))
+		expect(c.sync(inputs({ start, playing: true })).runStarted).toBe(false) // resume
+		c.sync(inputs({ start, playing: false }))
+		expect(c.sync(inputs({ start, playing: true })).runStarted).toBe(false) // resume again
 	})
 })
 
@@ -156,15 +218,28 @@ describe('RunController: stepping + scoring', () => {
 		expect(c.stepFixed(DT, []).scored).toBe(false)
 	})
 
-	it('re-arms a previously collected flag on the next run', () => {
+	it('re-arms a previously collected flag on the next run (after a reset)', () => {
+		const start = { x: 0, y: 0 }
 		const track = stubTrack([floor], [flagAt('f1', 0, 0)])
-		const c = new RunController(track, inputs({ start: { x: 0, y: 0 } }))
-		c.sync(inputs({ playing: true }))
+		const c = new RunController(track, inputs({ start }))
+		c.sync(inputs({ start, playing: true }))
 		c.stepFixed(DT, [])
 		expect(c.collectedCount).toBe(1)
-		c.sync(inputs({ playing: false }))
-		c.sync(inputs({ playing: true })) // new run
+		c.sync(inputs({ start, playing: false, resetNonce: 1 })) // Reset to start
+		c.sync(inputs({ start, playing: true, resetNonce: 1 })) // new run
 		expect(c.collectedCount).toBe(0)
+	})
+
+	it('keeps the collected flags on a pause/resume (same run)', () => {
+		const start = { x: 0, y: 0 }
+		const track = stubTrack([floor], [flagAt('f1', 0, 0)])
+		const c = new RunController(track, inputs({ start }))
+		c.sync(inputs({ start, playing: true }))
+		c.stepFixed(DT, [])
+		expect(c.collectedCount).toBe(1)
+		c.sync(inputs({ start, playing: false })) // pause
+		c.sync(inputs({ start, playing: true })) // resume — same run, flag stays collected
+		expect(c.collectedCount).toBe(1)
 	})
 })
 
