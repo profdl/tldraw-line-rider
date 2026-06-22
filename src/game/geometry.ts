@@ -1,4 +1,4 @@
-import { getPointsFromDrawSegment, type Editor, type TLShape, type TLDrawShape, type Vec } from 'tldraw'
+import { computed, getPointsFromDrawSegment, type Computed, type Editor, type TLShape, type TLDrawShape, type Vec } from 'tldraw'
 import type { LineKind, Segment, Vec2 } from './physics'
 import { makeCheckpoint, type Checkpoint } from './checkpoints'
 
@@ -73,16 +73,39 @@ function specOf(shape: TLShape): KindSpec {
  * shapes — both decorative / non-collidable.
  */
 export function collectSegments(editor: Editor): TrackSegment[] {
-	// Read geometry inside a transaction so tldraw's reactive computed caches
-	// (getShapePageTransform / getShapeGeometry) recompute against the current
-	// store epoch. Read cold from a bare rAF callback, those caches can return
-	// values from before a shape was moved — which silently breaks collision
-	// the next time you play after dragging a shape.
+	// Batch all the geometry/transform reads into one transaction frame so they
+	// don't interleave with concurrent reactions mid-collect. history:'ignore'
+	// keeps the (empty) transaction off the undo stack.
+	//
+	// NOTE: tldraw's geometry/transform caches (getShapeGeometry /
+	// getShapePageTransform) are reactive computeds that invalidate automatically
+	// when a shape's props change (epoch-based) — the transaction does NOT force a
+	// recompute. The freshness bug this used to hit was caused by passing the
+	// enumerated *snapshot* object to those calls instead of the shape *id*; the
+	// fix is to pass shape.id (see collectSegmentsNow below), which is what makes
+	// the cache resolve against the live record.
 	let result: TrackSegment[] = []
 	editor.run(() => {
 		result = collectSegmentsNow(editor)
 	}, { history: 'ignore' })
 	return result
+}
+
+/**
+ * A reactive view of the track segments, bound to one editor. Reading `.get()`
+ * recomputes only when the page's shapes change (tldraw memoizes the computed by
+ * its reactive dependencies), so the rAF loop can read it every frame without
+ * re-walking the whole page each time. Used by the live debug overlay (which
+ * needs the track to reflect edits while stopped) and as the gameplay snapshot
+ * source at run start. Create one per editor and reuse it.
+ */
+export function makeSegmentsComputed(editor: Editor): Computed<TrackSegment[]> {
+	return computed('lr-track-segments', () => collectSegmentsNow(editor))
+}
+
+/** Reactive view of the checkpoint boxes, bound to one editor. See makeSegmentsComputed. */
+export function makeCheckpointsComputed(editor: Editor): Computed<Checkpoint[]> {
+	return computed('lr-checkpoints', () => collectCheckpointsNow(editor))
 }
 
 function collectSegmentsNow(editor: Editor): TrackSegment[] {
@@ -185,8 +208,8 @@ const CHECKPOINT_TYPE = 'note'
 
 /**
  * Collect the page-space boxes of every checkpoint (note) shape on the current
- * page. Read inside editor.run(history:'ignore') for the same cache-freshness
- * reason as collectSegments.
+ * page. Reads are batched in editor.run(history:'ignore') for the same reason as
+ * collectSegments (see the note there about the caches being reactive).
  */
 export function collectCheckpoints(editor: Editor): Checkpoint[] {
 	let result: Checkpoint[] = []

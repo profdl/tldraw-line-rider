@@ -117,7 +117,16 @@ export const PHYSICS = {
 	// tumble), 1 = snaps upright instantly. Soft enough to pivot OVER bumps/corners
 	// (a stiff spring fights the pivot and jams the rig on a seam) while still
 	// keeping it upright on open track and recovering after jumps.
-	uprightStiffness: 0.12,
+	//
+	// applyUpright is now called ONCE per step (it used to run inside all 4
+	// constraint/collision iterations, so the per-step righting compounded to
+	// ~1-(1-0.12)^4 ≈ 0.40). This value is raised to ~that compounded figure so the
+	// single call delivers the same righting authority the rig was tuned around —
+	// the old 0.12 single-call righting is far too weak (a tilted rig fails to
+	// recover and tumbles). At 0.40 it still pivots cleanly over bumps and tracks
+	// the slope (verified by the bump/slope probes), while recovering from tilts the
+	// old 4x feel handled. Crash/ragdoll behavior is unchanged.
+	uprightStiffness: 0.4,
 	// Crash triggers. The sled ragdolls (upright spring off) for the rest of the
 	// run once either fires:
 	//  - a runner point's inbound impact speed exceeds this (px/s): slamming a wall
@@ -132,6 +141,12 @@ export const PHYSICS = {
 	// How far past vertical (radians) the mast may tilt before it counts as
 	// "tipped over" and crashes. ~75deg: rides steep ramps, crashes on a flip.
 	crashTilt: 1.3,
+	// Below this |cos(bodyAngle)| the runner is near-vertical and its horizontal
+	// facing is degenerate (the art is nearly edge-on), so bodyFacing HOLDS rather
+	// than snapping on the tiny, jittery sign of cos. ~0.1 ≈ within ~6deg of
+	// vertical. The old guard used EPSILON (1e-9), which is far too tight to ever
+	// suppress the flicker on a steep-but-not-exactly-vertical runner.
+	facingVerticalCos: 0.1,
 }
 
 // Below this we treat a displacement as zero (avoid divide-by-zero / NaN).
@@ -300,6 +315,22 @@ function resolveCollisions(
 		// Renamed from the old per-iteration `lastIter`: callers decide when the
 		// once-per-step kind effects apply.
 		const lastIter = applyKindEffects
+		// Velocity-delta accumulator. Each contacted segment computes its velocity
+		// correction against the SAME base velocity (`pos - prev` at the start of
+		// this pass), and we sum the corrections, applying them to `prev` ONCE after
+		// the loop. This makes an inside corner (a point touching two segments in one
+		// pass) order-independent: with the old per-hit `prev` rewrite, the second
+		// segment damped the velocity the first segment had already corrected and the
+		// rewrite discarded the first's correction along the non-shared axes
+		// (last-writer-wins), so the final velocity depended on segment array order
+		// and could still point into a surface. Position push-out still accumulates
+		// additively on `pos` inside the loop (unchanged). Base velocity is captured
+		// up front so every segment sees the same incoming velocity.
+		const baseVX = state.pos.x - state.prev.x
+		const baseVY = state.pos.y - state.prev.y
+		let accVX = 0 // summed velocity delta across all contacted segments
+		let accVY = 0
+		let anyHit = false
 		for (const seg of segments) {
 			// Swept detection: catches a fast point that crossed a thin line this
 			// step (tunneling) and always orients the normal toward the side the
@@ -325,7 +356,8 @@ function resolveCollisions(
 					if (alignFront <= 0) continue
 				}
 
-				// Push the rider out along the normal.
+				// Push the rider out along the normal. Position push-out accumulates
+				// additively across segments (a corner pushes out along both normals).
 				state.pos.x += nx * penetration
 				state.pos.y += ny * penetration
 
@@ -345,10 +377,13 @@ function resolveCollisions(
 				else if (seg.kind === 'sticky') tangentFriction = PHYSICS.stickyFriction * strength
 				else tangentFriction = PHYSICS.surfaceFriction
 
-				// Remove the velocity component into the surface (+ optional bounce),
-				// and apply tangential friction so the sled "rides" the line.
-				let vX = state.pos.x - state.prev.x
-				let vY = state.pos.y - state.prev.y
+				// Compute this segment's velocity correction against the SHARED base
+				// velocity (not a velocity another segment already modified). The
+				// per-segment delta (corrected - base) is summed; we never touch
+				// `prev` here. dVX/dVY start as the base velocity and become the
+				// segment's corrected velocity, then we accumulate (corrected - base).
+				let vX = baseVX
+				let vY = baseVY
 				const vn = vX * nx + vY * ny // velocity along normal
 				if (vn < 0) {
 					vX -= (1 + restitution) * vn * nx
@@ -382,8 +417,11 @@ function resolveCollisions(
 					vY -= tY * drag
 				}
 
-				state.prev.x = state.pos.x - vX
-				state.prev.y = state.pos.y - vY
+				// Accumulate this segment's velocity delta; applied to `prev` once
+				// after the loop so corner contacts compose order-independently.
+				accVX += vX - baseVX
+				accVY += vY - baseVY
+				anyHit = true
 
 				// Report the contact for the audio layer (only on the kind-effect pass,
 				// so each contacted segment is reported once per step — not once per
@@ -398,6 +436,14 @@ function resolveCollisions(
 					})
 				}
 			}
+		}
+		// Apply the summed velocity correction once. `pos` already moved by the
+		// accumulated push-out above; setting prev = pos - (base + acc) installs the
+		// combined velocity. Single-contact behavior is unchanged (acc == the one
+		// segment's delta), so step()'s unit-test path is preserved.
+		if (anyHit) {
+			state.prev.x = state.pos.x - (baseVX + accVX)
+			state.prev.y = state.pos.y - (baseVY + accVY)
 		}
 	}
 }
@@ -549,7 +595,7 @@ export function bodyFacing(body: Body, dt: number, deadband: number, hold: 1 | -
 	const cos = Math.cos(bodyAngle(body))
 	// At a near-vertical runner (cos ~ 0) horizontal facing is degenerate; the art
 	// is nearly edge-on anyway, so just hold rather than snap on a tiny cos sign.
-	if (Math.abs(cos) < EPSILON) return hold
+	if (Math.abs(cos) < PHYSICS.facingVerticalCos) return hold
 	return (Math.sign(vx) * Math.sign(cos)) as 1 | -1
 }
 
@@ -688,12 +734,43 @@ function bounceContactNormal(body: Body, segments: Segment[]): { n: Vec2; streng
 	const contact = PHYSICS.bodyRadius + PHYSICS.contactSkin
 	for (const seg of segments) {
 		if (seg.kind !== 'bounce') continue
+		// Segment direction + left-hand normal (same convention as sweptContact),
+		// used for the swept crossing test below.
+		let sdx = seg.b.x - seg.a.x
+		let sdy = seg.b.y - seg.a.y
+		const segLen = Math.hypot(sdx, sdy)
+		if (segLen < EPSILON) continue
+		sdx /= segLen
+		sdy /= segLen
+		const perpX = sdy
+		const perpY = -sdx
 		for (const p of body.points) {
+			// Proximity case: the point ends within the contact band of the line.
 			const { point } = closestPointOnSegment(p.pos, seg.a, seg.b)
 			const diff = sub(p.pos, point)
 			const dist = len(diff)
 			if (dist < contact && dist > EPSILON) {
 				return { n: { x: diff.x / dist, y: diff.y / dist }, strength: seg.strength ?? 1 }
+			}
+			// Swept case: a fast point crossed the line within its span this substep
+			// (prev and pos on opposite sides), jumping clean past the proximity band.
+			// Mirror sweptContact's crossing logic so a fast bounce still rebounds
+			// instead of being caught as a dead wall by resolveCollisions. The contact
+			// normal points toward the side the point came FROM (its prev side), so the
+			// re-launch sends the body back out the way it entered.
+			const sPrev = (p.prev.x - seg.a.x) * perpX + (p.prev.y - seg.a.y) * perpY
+			const sPos = (p.pos.x - seg.a.x) * perpX + (p.pos.y - seg.a.y) * perpY
+			if (sPrev * sPos < 0) {
+				// The crossing point's parameter along the segment: did it cross within
+				// the span (not off an end)? Interpolate where prev->pos meets the line.
+				const f = sPrev / (sPrev - sPos) // in (0,1): fraction from prev to pos
+				const cx = p.prev.x + (p.pos.x - p.prev.x) * f
+				const cy = p.prev.y + (p.pos.y - p.prev.y) * f
+				const tNum = (cx - seg.a.x) * sdx + (cy - seg.a.y) * sdy
+				if (tNum > 0 && tNum < segLen) {
+					const side = Math.sign(sPrev) || 1
+					return { n: { x: perpX * side, y: perpY * side }, strength: seg.strength ?? 1 }
+				}
 			}
 		}
 	}
@@ -733,13 +810,21 @@ export function stepBody(
 		vnBefore = v.x * bounce.n.x + v.y * bounce.n.y // <0 means moving into the line
 	}
 
+	// Righting moment: nudge the mast back toward upright ONCE per step, before the
+	// constraint/collision iterations resolve the shape and contacts. Previously
+	// this ran inside every iteration (4x/step): since applyUpright moves positions
+	// by a fixed fraction of uprightStiffness each call, the per-step righting
+	// compounded to ~1-(1-0.12)^4 ≈ 0.40, AND it perturbed runner points the
+	// collision pass had already settled, which the next pass re-resolved — a latent
+	// energy source that kept the rig faintly jittering on flat ground. Calling it
+	// once up front lets the iterations absorb its perturbation (collision re-seats
+	// contacting runner points), so the rig settles cleanly. uprightStiffness was
+	// re-tuned up to compensate for the lost compounding (see PHYSICS). A no-op once
+	// crashed, so a crashed sled ragdolls freely.
+	applyUpright(body)
 	const ITERATIONS = 4 // more passes than the point sled: shape + contacts to settle
 	for (let iter = 0; iter < ITERATIONS; iter++) {
 		for (const c of body.constraints) solveConstraint(body, c)
-		// Righting moment: nudge the mast back toward upright between constraint
-		// and collision passes, so the sled tracks the slope without tumbling. A
-		// no-op once crashed, so a crashed sled ragdolls freely.
-		applyUpright(body)
 		const last = iter === ITERATIONS - 1
 		// suppressBounce: bounce is re-applied at the body level below, so don't
 		// also reflect it per point (that would double the impulse, gaining energy).

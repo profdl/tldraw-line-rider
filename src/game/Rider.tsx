@@ -10,9 +10,10 @@ import {
 	PHYSICS,
 	type Body,
 	type ContactEvent,
+	type LineKind,
 } from './physics'
-import { SnailArt, SNAIL_CENTER_OFFSET } from './SnailArt'
-import { collectSegments, collectCheckpoints, type TrackSegment } from './geometry'
+import { SnailArt, SNAIL_CENTER_OFFSET, SNAIL_HALF_HEIGHT } from './SnailArt'
+import { makeSegmentsComputed, makeCheckpointsComputed, type TrackSegment } from './geometry'
 import { collectCheckpointHits, type Checkpoint } from './checkpoints'
 import { createAudioEngine } from './audio'
 import { playingAtom, followAtom, startPointAtom, statsAtom, scoreAtom, resetNonceAtom, mutedAtom, showCollisionsAtom } from './state'
@@ -40,7 +41,10 @@ const FACING_FLIP_SPEED = 8
 // Debug overlay (Show Collisions): the stroke color used to draw each kind's
 // collision segments, roughly matching its draw-color legend so the overlay reads
 // against the track. The rig's contact circles use a separate accent below.
-const DEBUG_KIND_COLOR: Record<string, string> = {
+// Typed Record<LineKind, …> (not Record<string, …>) so adding a new LineKind
+// without a debug color is a compile error — see CLAUDE.md's "Adding a line
+// behavior" checklist.
+const DEBUG_KIND_COLOR: Record<LineKind, string> = {
 	solid: '#1d1d1d',
 	accelerate: '#e03131',
 	brake: '#f76707',
@@ -71,6 +75,27 @@ const DEBUG_RIG_COLOR = '#ff1493' // hot pink so the rig circles pop off the tra
 // crash state and it ragdolls. We draw the snail character (SnailArt) in a group
 // placed at the runner midpoint, rotated by the runner angle, scaled by zoom.
 const SVG_NS = 'http://www.w3.org/2000/svg'
+
+// Art<->physics drift guard. PHYSICS.bodyRadius is hand-tuned to land the rig's
+// collision surface on the snail's DRAWN belly (see the comment on bodyRadius in
+// physics.ts): the runner line sits ~sledMast/3 below the rig center, and the
+// belly is SNAIL_HALF_HEIGHT below center, so the radius that reaches the belly
+// is ~SNAIL_HALF_HEIGHT - sledMast/3. That ties a pure-physics constant to the
+// TSX art module by hand. Rider is the only place that imports both, so we
+// verify the relationship here: if SnailArt's SNAIL_LEN ever changes (which
+// drives SNAIL_HALF_HEIGHT), this warns instead of silently letting the snail
+// sink through or float above the track. Generous tolerance — it's a sanity
+// check on gross drift, not the exact tuning.
+if (import.meta.env?.DEV) {
+	const expected = SNAIL_HALF_HEIGHT - PHYSICS.sledMast / 3
+	if (Math.abs(expected - PHYSICS.bodyRadius) > 4) {
+		console.warn(
+			`[line-rider] PHYSICS.bodyRadius (${PHYSICS.bodyRadius}) drifted from the snail art ` +
+				`(SNAIL_HALF_HEIGHT - sledMast/3 = ${expected.toFixed(2)}). ` +
+				`Re-check PHYSICS.bodyRadius in physics.ts against SnailArt.`
+		)
+	}
+}
 
 // Reconcile `g`'s direct children to exactly `count` elements of `tag` (pool
 // reusable nodes, create/trim the delta). Pooling avoids thrashing the DOM every
@@ -174,8 +199,17 @@ export function Rider() {
 		let last = performance.now()
 		let acc = 0
 		let frameCount = 0
-		let segments = collectSegments(editor)
-		let checkpoints: Checkpoint[] = collectCheckpoints(editor)
+		// Reactive views of the track, bound to this editor: `.get()` recomputes
+		// only when the page's shapes change (tldraw memoizes by dependency), so the
+		// debug overlay can read live geometry every frame cheaply, and the gameplay
+		// snapshot is just a `.get()` at run start.
+		const trackSegments = makeSegmentsComputed(editor)
+		const trackCheckpoints = makeCheckpointsComputed(editor)
+		// The gameplay snapshot the sim runs against: frozen at run start so a mid-run
+		// edit (shouldn't happen — the track is read-only while playing — but defends
+		// the invariant) can't change collision under the sled.
+		let segments = trackSegments.get()
+		let checkpoints: Checkpoint[] = trackCheckpoints.get()
 		// Ids collected this run; reset when a run begins so flags re-arm.
 		let collected = new Set<string>()
 
@@ -211,11 +245,11 @@ export function Rider() {
 
 		// --- Collision debug overlay -----------------------------------------
 		// When `showCollisionsAtom` is on we draw the physics' actual collision
-		// geometry into `debugRef`. We keep our own segment snapshot for it (rather
-		// than reusing the gameplay `segments`, which only refreshes at run start)
-		// so the overlay reflects track edits live while stopped — re-collected each
-		// frame off the editor. While playing we draw the same `segments` the sim is
-		// running against, so the overlay matches what the sled actually hits. The
+		// geometry into `debugRef`. While stopped we read the reactive `trackSegments`
+		// view (recomputes only when shapes change) so the overlay reflects track
+		// edits live without re-walking the page every frame. While playing we draw
+		// the same frozen `segments` the sim is running against, so the overlay
+		// matches what the sled actually hits. The
 		// rig circles are the body points drawn at PHYSICS.bodyRadius — the real
 		// contact surface, which is larger than the visible snail. We build the DOM
 		// once and mutate it; toggling off just hides the group.
@@ -245,8 +279,8 @@ export function Rider() {
 				// Run begins: re-seat the sled at the start and re-snapshot the track.
 				bodyRef.current = makeBody(start)
 				facingX = 1 // fresh body spawns facing +x; don't inherit last run's facing
-				segments = collectSegments(editor)
-				checkpoints = collectCheckpoints(editor)
+				segments = trackSegments.get()
+				checkpoints = trackCheckpoints.get()
 				collected = new Set<string>()
 				scoreAtom.set({ collected: 0, total: checkpoints.length })
 				statsAtom.set({ distance: 0, speed: 0 }) // clear last run's readout immediately
@@ -433,9 +467,10 @@ export function Rider() {
 						debugG.removeAttribute('display')
 						debugWasOn = true
 					}
-					// While playing, mirror the sim's snapshot; while stopped, re-collect
-					// each frame so edits to the track show up live.
-					const debugSegs: TrackSegment[] = isPlaying ? segments : collectSegments(editor)
+					// While playing, mirror the sim's frozen snapshot; while stopped, read
+					// the reactive view so edits to the track show up live. `.get()` only
+					// recomputes when shapes actually change, so this is cheap per frame.
+					const debugSegs: TrackSegment[] = isPlaying ? segments : trackSegments.get()
 					drawDebug({ segs: segsG, verts: vertsG, rig: rigG }, debugSegs, bodyRef.current, editor)
 				}
 			}
