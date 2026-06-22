@@ -127,12 +127,20 @@ export class RunController {
 		}
 
 		// Begin a run only on the first play after a reset/start-move. Toggling play
-		// off then on while a run is active resumes it — no re-seat, no re-snapshot.
+		// off then on while a run is active resumes it — no re-seat.
 		let runStarted = false
 		if (inputs.playing && !this.wasPlaying && !this.runActive) {
 			this.beginRun(inputs.start)
 			this.runActive = true
 			runStarted = true
+		} else if (inputs.playing && !this.wasPlaying) {
+			// Resume after a pause: the body continues where it left off, but the
+			// track is editable while paused (App drops read-only on pause), so a
+			// shape moved/rotated/recolored mid-pause would leave the frozen snapshot
+			// stale — the sled would collide against the OLD geometry (the rotated-
+			// shape glitch). Re-freeze the snapshot from the live track on every play
+			// edge so resume picks up any edits, without disturbing the body.
+			this.snapshotTrack()
 		}
 		this.wasPlaying = inputs.playing
 
@@ -151,9 +159,20 @@ export class RunController {
 	 */
 	private beginRun(start: Vec2): void {
 		this.reseat(start)
+		this.snapshotTrack()
+		this.collected = new Set<string>()
+	}
+
+	/**
+	 * Freeze the live track as this run's collision + checkpoint snapshot. The sim
+	 * runs against this frozen copy (the canvas is read-only while playing). Called
+	 * at run start AND on resume after a pause, so edits made while paused (e.g.
+	 * rotating a shape) take effect rather than leaving the sled colliding against
+	 * stale geometry. Does not touch `collected`, so a resume keeps scored flags.
+	 */
+	private snapshotTrack(): void {
 		this.segments = this.track.segments()
 		this.checkpoints = this.track.checkpoints()
-		this.collected = new Set<string>()
 	}
 
 	/**

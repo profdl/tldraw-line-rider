@@ -5,8 +5,8 @@ import type { TrackSegment } from './geometry'
 import type { Checkpoint } from './checkpoints'
 
 // A controllable stub for the editor-bound reactive views. Returns whatever
-// arrays it's currently holding, so a test can change the "track" and assert the
-// controller only snapshots it on a run start.
+// arrays it's currently holding, so a test can change the "track" and assert when
+// the controller re-snapshots it (every play edge — run start and resume).
 function stubTrack(
 	segments: TrackSegment[] = [],
 	checkpoints: Checkpoint[] = []
@@ -149,14 +149,30 @@ describe('RunController: pause / resume vs. restart', () => {
 		expect(bodyCenter(c.currentBody).y).toBeCloseTo(movedY, 5)
 	})
 
-	it('does not re-snapshot the track on a pause/resume', () => {
+	it('re-snapshots the track on resume so edits made while paused take effect', () => {
+		// The canvas is editable while paused (App drops read-only on pause), so a
+		// shape moved/rotated mid-pause must be picked up when the run resumes — else
+		// the sled collides against the stale geometry (the rotated-shape glitch).
+		const start = { x: 0, y: 0 }
+		const movedFloor: TrackSegment = { a: { x: -50, y: 200 }, b: { x: 50, y: 200 }, kind: 'solid', strength: 1 }
+		const track = stubTrack([floor], [])
+		const c = new RunController(track, inputs({ start }))
+		c.sync(inputs({ start, playing: true })) // snapshot: original floor, no checkpoints
+		c.sync(inputs({ start, playing: false })) // pause
+		track.setSegments([movedFloor]) // move a shape while paused
+		track.setCheckpoints([flagAt('f1', 0, 0)]) // and add a flag
+		c.sync(inputs({ start, playing: true })) // resume — picks up the live track
+		expect(c.currentSegments).toEqual([movedFloor])
+		expect(c.currentCheckpoints).toHaveLength(1)
+	})
+
+	it('does not re-snapshot the track mid-run (only on the play edge)', () => {
 		const start = { x: 0, y: 0 }
 		const track = stubTrack([floor], [])
 		const c = new RunController(track, inputs({ start }))
-		c.sync(inputs({ start, playing: true })) // snapshot: no checkpoints
-		c.sync(inputs({ start, playing: false })) // pause
-		track.setCheckpoints([flagAt('f1', 0, 0)]) // edit while paused
-		c.sync(inputs({ start, playing: true })) // resume — must keep the frozen snapshot
+		c.sync(inputs({ start, playing: true })) // snapshot at run start
+		track.setCheckpoints([flagAt('f1', 0, 0)]) // would-be mid-run edit (canvas is read-only here)
+		c.sync(inputs({ start, playing: true })) // still playing, no new edge
 		expect(c.currentCheckpoints).toHaveLength(0)
 	})
 
