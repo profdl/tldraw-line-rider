@@ -246,6 +246,30 @@ describe('physics: inside-corner collision (order-independent)', () => {
 		expect(a.prev.y).toBeCloseTo(b.prev.y, 9)
 	})
 
+	// Order-independence must survive the running-velocity model even when the two
+	// surfaces have DIFFERENT friction/kind and a NON-orthogonal corner with an
+	// ASYMMETRIC incoming velocity — the case where per-segment friction/kind on a
+	// running velocity could in theory reintroduce order-dependence. It doesn't,
+	// because step()'s relaxation iterations converge to the same fixed point. This
+	// is the adversarial guard for that property.
+	it('stays order-independent with mixed friction/kind at an asymmetric corner', () => {
+		const stickyFloor: Segment = { a: { x: -100, y: 0 }, b: { x: 100, y: 0 }, kind: 'sticky' }
+		const iceRamp: Segment = { a: { x: 0, y: 0 }, b: { x: -80, y: -60 }, kind: 'ice' }
+		const mk = () => {
+			const r = makeRider({ x: -3, y: -3 })
+			r.prev = { x: -12, y: -9 } // asymmetric motion into both surfaces
+			return r
+		}
+		const a = mk()
+		step(a, [stickyFloor, iceRamp], DT)
+		const b = mk()
+		step(b, [iceRamp, stickyFloor], DT)
+		expect(a.pos.x).toBeCloseTo(b.pos.x, 9)
+		expect(a.pos.y).toBeCloseTo(b.pos.y, 9)
+		expect(a.prev.x).toBeCloseTo(b.prev.x, 9)
+		expect(a.prev.y).toBeCloseTo(b.prev.y, 9)
+	})
+
 	// The sum-of-deltas refactor must not gain energy at a corner: a point wedged
 	// into an inside corner under gravity must settle (not bounce/jitter/explode)
 	// over many steps. Guards against the "summing two segments' corrections
