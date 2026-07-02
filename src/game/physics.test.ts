@@ -915,6 +915,25 @@ describe('physics: side-rider thrust', () => {
 		expect(low).toBeLessThan(50 + PHYSICS.bodyRadius)
 	})
 
+	it('climbs a sloped ramp under sideways gravity (does not stall against the slope)', () => {
+		// The regression this fixes: a purely horizontal push drove into an uphill
+		// slope and stalled. "Sideways gravity" (constant +x, reconciled by the solver
+		// before collisions) climbs any drawn slope instead. Ground + a ~22° ramp whose
+		// foot sits on the ground; the driven body must ride UP the ramp (well above the
+		// ground line), not park at its foot.
+		const ground: Segment = { a: { x: -1e7, y: 0 }, b: { x: 1e7, y: 0 }, kind: 'solid' }
+		const ramp: Segment = { a: { x: 220, y: 0 }, b: { x: 540, y: -130 }, kind: 'solid' }
+		const body = makeBody({ x: 0, y: -PHYSICS.bodyRadius })
+		let highest = Infinity // smallest (highest) center-y reached
+		for (let i = 0; i < 400; i++) {
+			stepBody(body, [ground, ramp], DT, undefined, thrust)
+			highest = Math.min(highest, bodyCenter(body).y)
+		}
+		// Climbed well up the ramp (the ground rest is ~ -bodyRadius ≈ -20; getting to
+		// -45 means it rode meaningfully up the slope), rather than stalling at the foot.
+		expect(highest).toBeLessThan(-45)
+	})
+
 	it('applies no thrust in the air (a launched body keeps its horizontal speed, no push)', () => {
 		// No segments -> the body is airborne every step. Give it some rightward speed
 		// and confirm thrust does NOT keep adding to it (gravity only shapes the arc).

@@ -113,12 +113,13 @@ export const PHYSICS = {
 	brakeDrag: 0.2, // fraction of tangential speed removed per step on 'brake' lines
 
 	// --- Side-rider mode (side-scroller) ------------------------------------
-	// Constant forward propulsion in 'side' mode. The character auto-runs right
-	// along the implicit ground and launches off ramps. Applied along the GROUND
-	// TANGENT (so it climbs ramps, not into them) on the runner points ONLY while
-	// grounded — never in the air, so a launched character is a pure projectile and
-	// gravity owns the arc.
-	sideThrust: 2400, // px/s^2 forward propulsion along the ground while grounded (matches accelerateBoost scale)
+	// Constant forward propulsion in 'side' mode — "sideways gravity": a fixed +x
+	// force, exactly like gravity but rotated 90°. The character auto-runs right
+	// along the implicit ground and launches off ramps. Applied to the runner points
+	// ONLY while grounded — never in the air, so a launched character is a pure
+	// projectile and gravity owns the arc. The solver reconciles it before
+	// collisions, so it CLIMBS any drawn slope (no surface-tangent guessing).
+	sideThrust: 2400, // px/s^2 +x propulsion while grounded (matches accelerateBoost scale)
 	// px/s; thrust stops adding past this cruise speed. Kept well under the
 	// tunneling threshold (2*bodyRadius/FIXED_DT ≈ 4870 px/s here) so a running
 	// character never shoots through a thin ramp in a single step — same guard the
@@ -832,58 +833,39 @@ function addBodyVelocity(body: Body, dvx: number, dvy: number): void {
  * gravity-only sled, the same discipline as the optional `contacts` sink.
  */
 export interface StepBodyOpts {
-	/** Forward propulsion, px/s^2, applied to the runner along the ground tangent while grounded. */
+	/** Forward propulsion, px/s^2 — a fixed +x force ("sideways gravity") on the runner while grounded. */
 	thrust?: number
 	/** Cruise speed cap, px/s; thrust stops adding past this. */
 	cruise?: number
 }
 
-/** Mean forward (tangential) speed of the runner along a unit tangent, px/s. */
-function runnerTangentSpeed(body: Body, tx: number, ty: number, dt: number): number {
+/** Mean horizontal velocity of the runner points (BACK+FRONT), px/s. */
+function runnerHorizontalVelocity(body: Body, dt: number): number {
 	const back = body.points[BACK]
 	const front = body.points[FRONT]
-	const vx = (back.pos.x - back.prev.x + front.pos.x - front.prev.x) / (2 * dt)
-	const vy = (back.pos.y - back.prev.y + front.pos.y - front.prev.y) / (2 * dt)
-	return vx * tx + vy * ty
+	return (back.pos.x - back.prev.x + front.pos.x - front.prev.x) / (2 * dt)
 }
 
 /**
- * Find the ground a runner point (BACK/FRONT) is standing on and return its
- * surface TANGENT, oriented forward (+x-ish, the run direction). Side-rider
- * thrust pushes along this tangent so the character climbs ramps naturally
- * (a purely horizontal push would just drive into an uphill slope and stall)
- * and so the force follows the ground under pan of the slope. Returns null when
- * neither runner point is near a surface — i.e. the body is airborne (launched
- * off a ramp), so no thrust is applied and it flies as a pure projectile.
- *
- * Only the runner points are probed (not the mast), matching where thrust is
- * applied; the first contacted runner point wins. 'scenery' segments are skipped
- * (non-collidable), like everywhere else.
+ * Whether a runner point (BACK/FRONT) is resting on/near a surface — i.e. the
+ * body is grounded. Side-rider propulsion only fires when grounded, so a launched
+ * character flies as a pure projectile (no forward force in the air). A simple
+ * proximity boolean (not a tangent): the propulsion direction is a fixed +x
+ * ("sideways gravity"), so we never pick a surface tangent — the guessing that
+ * made ramp-climbing brittle before. Only the runner points are probed (not the
+ * mast); 'scenery' segments are skipped.
  */
-function runnerGroundTangent(body: Body, segments: Segment[]): Vec2 | null {
+function runnerGrounded(body: Body, segments: Segment[]): boolean {
 	const contact = PHYSICS.bodyRadius + PHYSICS.contactSkin
 	for (const i of [BACK, FRONT]) {
 		const p = body.points[i]
 		for (const seg of segments) {
 			if (seg.kind === 'scenery') continue
 			const { point } = closestPointOnSegment(p.pos, seg.a, seg.b)
-			const dist = Math.hypot(p.pos.x - point.x, p.pos.y - point.y)
-			if (dist >= contact) continue
-			let tx = seg.b.x - seg.a.x
-			let ty = seg.b.y - seg.a.y
-			const tlen = Math.hypot(tx, ty)
-			if (tlen < EPSILON) continue
-			tx /= tlen
-			ty /= tlen
-			// Orient the tangent forward (run direction is +x): if it points -x, flip.
-			if (tx < 0) {
-				tx = -tx
-				ty = -ty
-			}
-			return { x: tx, y: ty }
+			if (Math.hypot(p.pos.x - point.x, p.pos.y - point.y) < contact) return true
 		}
 	}
-	return null
+	return false
 }
 
 /**
@@ -925,29 +907,26 @@ export function stepBody(
 	// crashed, so a crashed sled ragdolls freely.
 	applyUpright(body)
 
-	// Side-rider propulsion: a constant push on the runner points ALONG THE GROUND
-	// TANGENT (not flat horizontal), capped at cruise. Applied BEFORE the
-	// constraint/collision iterations — like gravity in integrate() — so the solver
-	// reconciles it into the whole rig the same step (adding it AFTER the loop left
-	// a raw per-substep kick the solver never distributed, which read as jitter).
-	// Tangential so the character climbs ramps instead of stalling as a horizontal
-	// push drives into an uphill slope. Runner-only (not the mast) so it doesn't
-	// torque the upright spring. runnerGroundTangent returns null when airborne, so
-	// a launched character gets no thrust and flies as a pure projectile; skipped
-	// when crashed. Absent `opts.thrust` this block is a no-op (classic sled stays
-	// byte-identical).
-	if (opts?.thrust && !body.crashed) {
-		const tangent = runnerGroundTangent(body, segments)
-		if (tangent) {
-			const cruise = opts.cruise ?? Infinity
-			if (runnerTangentSpeed(body, tangent.x, tangent.y, dt) < cruise) {
-				// Verlet: shifting prev back by (accel*dt*dt) along the tangent adds that
-				// velocity this step.
-				const dv = opts.thrust * dt * dt
-				for (const i of [BACK, FRONT]) {
-					body.points[i].prev.x -= tangent.x * dv
-					body.points[i].prev.y -= tangent.y * dv
-				}
+	// Side-rider propulsion — "SIDEWAYS GRAVITY": a constant +x force on the runner
+	// points, exactly like gravity but rotated 90° to point right instead of down.
+	// Applied BEFORE the constraint/collision iterations (like gravity in
+	// integrate()) so the solver reconciles it into the whole rig the same step —
+	// which is what lets it CLIMB a ramp: the +x force presses the runner into the
+	// slope and the collision solve redirects the blocked component up the surface,
+	// same as down-gravity slides the sled DOWN a slope. No surface-tangent guessing
+	// (the brittle part of the old approach), so any drawn slope is climbable.
+	// Capped at cruise (on horizontal speed) so it can't run away or tunnel.
+	// Runner-only (not the mast) so it doesn't torque the upright spring. Gated on
+	// grounded so a launched character gets no push and flies as a pure projectile;
+	// skipped when crashed. Absent `opts.thrust` this block is a no-op (classic sled
+	// stays byte-identical).
+	if (opts?.thrust && !body.crashed && runnerGrounded(body, segments)) {
+		const cruise = opts.cruise ?? Infinity
+		if (runnerHorizontalVelocity(body, dt) < cruise) {
+			// Verlet: shifting prev.x back by (accel*dt*dt) adds that +x velocity.
+			const dv = opts.thrust * dt * dt
+			for (const i of [BACK, FRONT]) {
+				body.points[i].prev.x -= dv
 			}
 		}
 	}
