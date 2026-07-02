@@ -1,14 +1,23 @@
 import { useState, useCallback } from 'react'
-import { Tldraw, type TLComponents, type Editor, useValue } from 'tldraw'
+import { Tldraw, type TLComponents, type Editor, useValue, createShapeId, type IndexKey } from 'tldraw'
 import 'tldraw/tldraw.css'
 import { Rider } from './game/Rider'
 import { LEGEND } from './game/geometry'
-import { playingAtom, followAtom, startPointAtom, statsAtom, scoreAtom, resetNonceAtom, mutedAtom, showCollisionsAtom } from './game/state'
+import { playingAtom, followAtom, startPointAtom, statsAtom, scoreAtom, resetNonceAtom, mutedAtom, showCollisionsAtom, modeAtom } from './game/state'
 import './App.css'
 
 // How far above the viewport center to drop the sled when "set start" is hit,
 // so it has room to fall onto the track below.
 const START_DROP_ABOVE_CENTER = 150
+
+// A default test ramp for side mode: a gentle up-ramp the character can launch
+// off. Placed relative to the start point — it begins ON the ground (start.y) a
+// bit AHEAD of the spawn so the auto-running snail meets it, and rises over a
+// shallow run (~22°) for a satisfying hop rather than a wipeout. A native `line`
+// shape (native-first contract), black = solid track.
+const RAMP_AHEAD = 220 // px ahead of the start where the ramp begins
+const RAMP_RUN = 320 // horizontal length of the ramp
+const RAMP_RISE = 130 // how far it climbs (up = -y)
 
 // The rider overlay renders on top of the canvas. Defined once at module scope
 // (and reading its gameplay state from atoms) so its identity never changes —
@@ -51,6 +60,7 @@ function App() {
 	// Mirror the atoms into React for the panel. useValue subscribes reactively
 	// without making `components` depend on any of these.
 	const playing = useValue('playing', () => playingAtom.get(), [])
+	const mode = useValue('mode', () => modeAtom.get(), [])
 	const follow = useValue('follow', () => followAtom.get(), [])
 	const muted = useValue('muted', () => mutedAtom.get(), [])
 	const showCollisions = useValue('showCollisions', () => showCollisionsAtom.get(), [])
@@ -96,6 +106,41 @@ function App() {
 		resetNonceAtom.update((n) => n + 1)
 	}, [editor])
 
+	// Drop a gentle test ramp ahead of the start point, then select + frame it so
+	// it's obvious where it landed. A native `line` shape (black = solid track), so
+	// it reads/collides exactly like a hand-drawn ramp — nothing custom. Handy for
+	// trying side mode without drawing one by hand. The createShape is a normal
+	// (undoable) edit like any drawn shape; only the select/zoom is history:'ignore'
+	// (a camera/selection change must not land on the undo stack).
+	const handleAddRamp = useCallback(() => {
+		if (!editor) return
+		const start = startPointAtom.get()
+		const baseX = start.x + RAMP_AHEAD
+		const baseY = start.y // ramp foot sits on the ground plane
+		const id = createShapeId()
+		editor.createShape({
+			id,
+			type: 'line',
+			x: baseX,
+			y: baseY,
+			props: {
+				color: 'black',
+				spline: 'line',
+				points: {
+					a1: { id: 'a1', index: 'a1' as IndexKey, x: 0, y: 0 },
+					a2: { id: 'a2', index: 'a2' as IndexKey, x: RAMP_RUN, y: -RAMP_RISE },
+				},
+			},
+		})
+		editor.run(
+			() => {
+				editor.select(id)
+				editor.zoomToSelection()
+			},
+			{ history: 'ignore' }
+		)
+	}, [editor])
+
 	return (
 		<div className="lr-root">
 			<Tldraw persistenceKey="line-rider" components={components} onMount={handleMount} />
@@ -127,6 +172,25 @@ function App() {
 				>
 					⌖
 				</button>
+				<button
+					className={mode === 'side' ? 'lr-btn lr-icon lr-active' : 'lr-btn lr-icon'}
+					disabled={playing}
+					aria-pressed={mode === 'side'}
+					title={mode === 'side' ? 'Mode: Side-rider (draw ramps above the ground)' : 'Mode: Line Rider'}
+					onClick={() => modeAtom.update((m) => (m === 'side' ? 'line' : 'side'))}
+				>
+					{mode === 'side' ? '🏃' : '🎿'}
+				</button>
+				{mode === 'side' && (
+					<button
+						className="lr-btn lr-icon"
+						disabled={playing}
+						title="Add a test ramp ahead of the start"
+						onClick={handleAddRamp}
+					>
+						⛰
+					</button>
+				)}
 				<ToggleButton
 					active={follow}
 					title={follow ? 'Camera follow: on' : 'Camera follow: off'}

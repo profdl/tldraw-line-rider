@@ -24,6 +24,7 @@ import {
   resetNonceAtom,
   mutedAtom,
   showCollisionsAtom,
+  modeAtom,
 } from "./state";
 
 const FIXED_DT = 1 / 120; // physics substep (s)
@@ -84,6 +85,7 @@ export function Rider() {
   const snailRef = useRef<SVGGElement | null>(null);
   const snailFullRef = useRef<SVGGElement | null>(null);
   const snailShellRef = useRef<SVGGElement | null>(null);
+  const groundRef = useRef<SVGLineElement | null>(null);
   const startRef = useRef<SVGGElement | null>(null);
   const debugRef = useRef<SVGGElement | null>(null);
   const debugSegsRef = useRef<SVGGElement | null>(null);
@@ -112,6 +114,7 @@ export function Rider() {
       playing: playingAtom.get(),
       start: startPointAtom.get(),
       resetNonce: resetNonceAtom.get(),
+      mode: modeAtom.get(),
     });
 
     const run = new RunController(track, readInputs());
@@ -204,6 +207,30 @@ export function Rider() {
       // that container). pageToScreen would return window-relative coords and
       // drift by the container's screen offset whenever the editor isn't flush
       // to the window. Correct under pan/zoom/resize in every state.
+      // Side-rider ground plane. In 'side' mode the character runs on an implicit
+      // horizontal ground at the spawn's Y (injected as a collision segment in
+      // RunController). Draw it as a full-viewport-width line so that ground is
+      // visible, not just ridable. Page-Y source: the FROZEN run start while
+      // playing (matches the collision snapshot), the LIVE start while stopped (so
+      // moving the start moves the visible ground with it). Mapping only the Y
+      // through pageToViewport keeps it glued under pan/zoom; x spans the whole
+      // container so it reads as an endless ground. Hidden entirely in line mode.
+      const groundEl = groundRef.current;
+      if (groundEl) {
+        if (inputs.mode === "side") {
+          const groundY = isPlaying ? run.currentStart.y : inputs.start.y;
+          const y = editor.pageToViewport({ x: inputs.start.x, y: groundY }).y;
+          const w = editor.getViewportScreenBounds().w;
+          groundEl.setAttribute("opacity", "1");
+          groundEl.setAttribute("x1", "0");
+          groundEl.setAttribute("y1", `${toDomPrecision(y)}`);
+          groundEl.setAttribute("x2", `${toDomPrecision(w)}`);
+          groundEl.setAttribute("y2", `${toDomPrecision(y)}`);
+        } else {
+          groundEl.setAttribute("opacity", "0");
+        }
+      }
+
       // Start marker: a crosshair pinned to the spawn point in page space, so
       // the player can see where the sled will drop from. Hidden during a run
       // (the sled itself shows where you are).
@@ -341,6 +368,12 @@ export function Rider() {
         <g ref={debugVertsRef} />
         <g ref={debugRigRef} />
       </g>
+      {/* Side-rider ground plane: a horizontal line spanning the viewport at the
+			    ground's page-Y, so the implicit ground the character runs on is VISIBLE
+			    (the collision segment alone is invisible in normal play). The rAF loop
+			    stretches it across the viewport width at the mapped Y and hides it in
+			    line mode. Drawn before the start marker/snail so they sit on top. */}
+      <line ref={groundRef} className="lr-ground" opacity="0" />
       {/* Start marker: a dotted ring sized just larger than the snail, encircling
 			    the spawn point so the player can see (and aim) where the sled will drop
 			    from. Centered on its own origin so the rAF loop only has to translate +

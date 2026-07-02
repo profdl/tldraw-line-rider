@@ -25,6 +25,7 @@ const inputs = (over: Partial<RunInputs> = {}): RunInputs => ({
 	playing: false,
 	start: { x: 0, y: 0 },
 	resetNonce: 0,
+	mode: 'line',
 	...over,
 })
 
@@ -256,6 +257,59 @@ describe('RunController: stepping + scoring', () => {
 		c.sync(inputs({ start, playing: false })) // pause
 		c.sync(inputs({ start, playing: true })) // resume — same run, flag stays collected
 		expect(c.collectedCount).toBe(1)
+	})
+})
+
+describe('RunController: side mode (implicit ground + thrust)', () => {
+	it('line mode does not inject a ground plane (only the user track is present)', () => {
+		const c = new RunController(stubTrack([floor]), inputs())
+		c.sync(inputs({ playing: true }))
+		expect(c.currentSegments).toEqual([floor])
+	})
+
+	it('side mode appends an implicit horizontal ground segment at the spawn Y', () => {
+		const start = { x: 30, y: 90 }
+		const c = new RunController(stubTrack([floor]), inputs({ start }))
+		c.sync(inputs({ start, playing: true, mode: 'side' }))
+		// The user's floor plus one injected ground line.
+		expect(c.currentSegments).toHaveLength(2)
+		const ground = c.currentSegments[c.currentSegments.length - 1]
+		expect(ground.kind).toBe('solid')
+		// Horizontal at y = start.y, straddling start.x.
+		expect(ground.a.y).toBe(90)
+		expect(ground.b.y).toBe(90)
+		expect(ground.a.x).toBeLessThan(30)
+		expect(ground.b.x).toBeGreaterThan(30)
+	})
+
+	it('the ground follows the spawn Y (re-frozen when the start moves)', () => {
+		const start1 = { x: 0, y: 100 }
+		const c = new RunController(stubTrack([]), inputs({ start: start1 }))
+		c.sync(inputs({ start: start1, playing: true, mode: 'side' }))
+		expect(c.currentSegments[0].a.y).toBe(100)
+		// Reset to a new start height, then play again -> ground re-freezes there.
+		const start2 = { x: 0, y: 250 }
+		c.sync(inputs({ start: start2, playing: false, mode: 'side' }))
+		c.sync(inputs({ start: start2, playing: true, mode: 'side' }))
+		expect(c.currentSegments[0].a.y).toBe(250)
+	})
+
+	it('drives the body forward along the ground in side mode', () => {
+		// No user track; the implicit ground carries the sled, and thrust runs it right.
+		const start = { x: 0, y: 0 }
+		const c = new RunController(stubTrack([]), inputs({ start }))
+		c.sync(inputs({ start, playing: true, mode: 'side' }))
+		for (let i = 0; i < 240; i++) c.stepFixed(DT, [])
+		expect(bodyCenter(c.currentBody).x).toBeGreaterThan(50)
+	})
+
+	it('a line-mode run does not drive the body forward (thrust is side-only)', () => {
+		const start = { x: 0, y: 0 }
+		const c = new RunController(stubTrack([floor]), inputs({ start }))
+		c.sync(inputs({ start, playing: true, mode: 'line' }))
+		for (let i = 0; i < 240; i++) c.stepFixed(DT, [])
+		// Gravity settles it on the floor; without thrust it barely moves in x.
+		expect(Math.abs(bodyCenter(c.currentBody).x)).toBeLessThan(20)
 	})
 })
 

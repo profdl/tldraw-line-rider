@@ -111,6 +111,19 @@ export const PHYSICS = {
 	// shoot through thin lines in a single step.
 	accelerateMaxSpeed: 1300,
 	brakeDrag: 0.2, // fraction of tangential speed removed per step on 'brake' lines
+
+	// --- Side-rider mode (side-scroller) ------------------------------------
+	// Constant forward propulsion in 'side' mode. The character auto-runs right
+	// along the implicit ground and launches off ramps. Applied along the GROUND
+	// TANGENT (so it climbs ramps, not into them) on the runner points ONLY while
+	// grounded — never in the air, so a launched character is a pure projectile and
+	// gravity owns the arc.
+	sideThrust: 2400, // px/s^2 forward propulsion along the ground while grounded (matches accelerateBoost scale)
+	// px/s; thrust stops adding past this cruise speed. Kept well under the
+	// tunneling threshold (2*bodyRadius/FIXED_DT ≈ 4870 px/s here) so a running
+	// character never shoots through a thin ramp in a single step — same guard the
+	// accelerateMaxSpeed cap uses. ~750 reads as a lively but controllable run.
+	sideCruiseSpeed: 750,
 	bounceRestitution: 0.85, // restitution for 'bounce' lines (springy; 0=none, 1=elastic)
 	stickyFriction: 0.45, // tangential drag fraction on 'sticky' lines (strong grip)
 	iceFriction: 0.0, // tangential drag on 'ice' lines (perfectly frictionless glide)
@@ -814,6 +827,66 @@ function addBodyVelocity(body: Body, dvx: number, dvy: number): void {
 }
 
 /**
+ * Options threaded into a single body step. Currently just side-rider thrust.
+ * Omitting it (or `thrust`) leaves stepBody byte-identical to the classic
+ * gravity-only sled, the same discipline as the optional `contacts` sink.
+ */
+export interface StepBodyOpts {
+	/** Forward propulsion, px/s^2, applied to the runner along the ground tangent while grounded. */
+	thrust?: number
+	/** Cruise speed cap, px/s; thrust stops adding past this. */
+	cruise?: number
+}
+
+/** Mean forward (tangential) speed of the runner along a unit tangent, px/s. */
+function runnerTangentSpeed(body: Body, tx: number, ty: number, dt: number): number {
+	const back = body.points[BACK]
+	const front = body.points[FRONT]
+	const vx = (back.pos.x - back.prev.x + front.pos.x - front.prev.x) / (2 * dt)
+	const vy = (back.pos.y - back.prev.y + front.pos.y - front.prev.y) / (2 * dt)
+	return vx * tx + vy * ty
+}
+
+/**
+ * Find the ground a runner point (BACK/FRONT) is standing on and return its
+ * surface TANGENT, oriented forward (+x-ish, the run direction). Side-rider
+ * thrust pushes along this tangent so the character climbs ramps naturally
+ * (a purely horizontal push would just drive into an uphill slope and stall)
+ * and so the force follows the ground under pan of the slope. Returns null when
+ * neither runner point is near a surface — i.e. the body is airborne (launched
+ * off a ramp), so no thrust is applied and it flies as a pure projectile.
+ *
+ * Only the runner points are probed (not the mast), matching where thrust is
+ * applied; the first contacted runner point wins. 'scenery' segments are skipped
+ * (non-collidable), like everywhere else.
+ */
+function runnerGroundTangent(body: Body, segments: Segment[]): Vec2 | null {
+	const contact = PHYSICS.bodyRadius + PHYSICS.contactSkin
+	for (const i of [BACK, FRONT]) {
+		const p = body.points[i]
+		for (const seg of segments) {
+			if (seg.kind === 'scenery') continue
+			const { point } = closestPointOnSegment(p.pos, seg.a, seg.b)
+			const dist = Math.hypot(p.pos.x - point.x, p.pos.y - point.y)
+			if (dist >= contact) continue
+			let tx = seg.b.x - seg.a.x
+			let ty = seg.b.y - seg.a.y
+			const tlen = Math.hypot(tx, ty)
+			if (tlen < EPSILON) continue
+			tx /= tlen
+			ty /= tlen
+			// Orient the tangent forward (run direction is +x): if it points -x, flip.
+			if (tx < 0) {
+				tx = -tx
+				ty = -ty
+			}
+			return { x: tx, y: ty }
+		}
+	}
+	return null
+}
+
+/**
  * Advance a multi-point body by one fixed timestep. Integrates every point,
  * then interleaves constraint solving with collision resolution so the body
  * both holds its shape and rests on the track. Mutates and returns `body`.
@@ -822,7 +895,8 @@ export function stepBody(
 	body: Body,
 	segments: Segment[],
 	dt: number,
-	contacts?: ContactEvent[]
+	contacts?: ContactEvent[],
+	opts?: StepBodyOpts
 ): Body {
 	const prevAngle = bodyAngle(body)
 	for (const p of body.points) integrate(p, dt)
@@ -850,6 +924,34 @@ export function stepBody(
 	// re-tuned up to compensate for the lost compounding (see PHYSICS). A no-op once
 	// crashed, so a crashed sled ragdolls freely.
 	applyUpright(body)
+
+	// Side-rider propulsion: a constant push on the runner points ALONG THE GROUND
+	// TANGENT (not flat horizontal), capped at cruise. Applied BEFORE the
+	// constraint/collision iterations — like gravity in integrate() — so the solver
+	// reconciles it into the whole rig the same step (adding it AFTER the loop left
+	// a raw per-substep kick the solver never distributed, which read as jitter).
+	// Tangential so the character climbs ramps instead of stalling as a horizontal
+	// push drives into an uphill slope. Runner-only (not the mast) so it doesn't
+	// torque the upright spring. runnerGroundTangent returns null when airborne, so
+	// a launched character gets no thrust and flies as a pure projectile; skipped
+	// when crashed. Absent `opts.thrust` this block is a no-op (classic sled stays
+	// byte-identical).
+	if (opts?.thrust && !body.crashed) {
+		const tangent = runnerGroundTangent(body, segments)
+		if (tangent) {
+			const cruise = opts.cruise ?? Infinity
+			if (runnerTangentSpeed(body, tangent.x, tangent.y, dt) < cruise) {
+				// Verlet: shifting prev back by (accel*dt*dt) along the tangent adds that
+				// velocity this step.
+				const dv = opts.thrust * dt * dt
+				for (const i of [BACK, FRONT]) {
+					body.points[i].prev.x -= tangent.x * dv
+					body.points[i].prev.y -= tangent.y * dv
+				}
+			}
+		}
+	}
+
 	const ITERATIONS = 4 // more passes than the point sled: shape + contacts to settle
 	for (let iter = 0; iter < ITERATIONS; iter++) {
 		for (const c of body.constraints) solveConstraint(body, c)

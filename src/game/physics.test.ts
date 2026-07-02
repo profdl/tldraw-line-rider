@@ -872,6 +872,74 @@ describe('physics: sled rig (upright + crash)', () => {
 	})
 })
 
+describe('physics: side-rider thrust', () => {
+	const floor: Segment = { a: { x: -1e7, y: 50 }, b: { x: 1e7, y: 50 }, kind: 'solid' }
+	const thrust = { thrust: PHYSICS.sideThrust, cruise: PHYSICS.sideCruiseSpeed }
+	const runBody = (body: Body, segments: Segment[], steps: number, opts?: typeof thrust) => {
+		for (let i = 0; i < steps; i++) stepBody(body, segments, DT, undefined, opts)
+		return body
+	}
+
+	it('omitting opts is byte-identical to the classic gravity-only sled', () => {
+		// The whole point of the optional arg: line mode (no opts) must be unchanged.
+		const withArg = makeBody({ x: 0, y: -40 })
+		const without = makeBody({ x: 0, y: -40 })
+		for (let i = 0; i < 300; i++) {
+			stepBody(withArg, [floor], DT, undefined, undefined)
+			stepBody(without, [floor], DT)
+		}
+		for (let i = 0; i < withArg.points.length; i++) {
+			expect(withArg.points[i].pos.x).toBe(without.points[i].pos.x)
+			expect(withArg.points[i].pos.y).toBe(without.points[i].pos.y)
+		}
+	})
+
+	it('drives the grounded body forward (+x) vs. a thrust-free sled that stays put', () => {
+		// On a flat solid line, gravity alone leaves the sled sitting still; thrust
+		// must carry it to the right.
+		const idle = runBody(makeBody({ x: 0, y: -40 }), [floor], 240)
+		const driven = runBody(makeBody({ x: 0, y: -40 }), [floor], 240, thrust)
+		expect(driven.points[BACK].pos.x).toBeGreaterThan(idle.points[BACK].pos.x + 50)
+	})
+
+	it('accelerates toward cruise then holds under it (no runaway, no tunneling)', () => {
+		const body = runBody(makeBody({ x: 0, y: -40 }), [floor], 600, thrust)
+		const speed = Math.hypot(bodyVelocity(body, DT).x, bodyVelocity(body, DT).y)
+		// Reached a brisk run and capped near cruise, not accelerating without bound.
+		expect(speed).toBeGreaterThan(PHYSICS.sideCruiseSpeed * 0.5)
+		expect(speed).toBeLessThanOrEqual(PHYSICS.sideCruiseSpeed + 60)
+		// Still riding on TOP of the line (didn't tunnel through it): the lowest
+		// point rests near the line, not sunk well below it. The runner contacts at
+		// ~line - bodyRadius; allow a band for the moving contact.
+		const low = Math.max(...body.points.map((p) => p.pos.y))
+		expect(low).toBeLessThan(50 + PHYSICS.bodyRadius)
+	})
+
+	it('applies no thrust in the air (a launched body keeps its horizontal speed, no push)', () => {
+		// No segments -> the body is airborne every step. Give it some rightward speed
+		// and confirm thrust does NOT keep adding to it (gravity only shapes the arc).
+		const airborne = makeBody({ x: 0, y: 0 })
+		for (const p of airborne.points) p.prev.x = p.pos.x - 100 * DT // 100 px/s right
+		const free = makeBody({ x: 0, y: 0 })
+		for (const p of free.points) p.prev.x = p.pos.x - 100 * DT
+		for (let i = 0; i < 40; i++) {
+			stepBody(airborne, [], DT, undefined, thrust)
+			stepBody(free, [], DT) // identical body, no thrust
+		}
+		// With no ground contact, thrust is skipped, so the thrust body's horizontal
+		// travel matches the untouched free-fall body's exactly.
+		expect(bodyCenter(airborne).x).toBeCloseTo(bodyCenter(free).x, 6)
+	})
+
+	it('does not torque the mast off upright (thrust is runner-only)', () => {
+		const body = runBody(makeBody({ x: 0, y: -40 }), [floor], 240, thrust)
+		const midY = (body.points[BACK].pos.y + body.points[FRONT].pos.y) / 2
+		// Mast still sits above the runner base while being driven forward.
+		expect(body.points[MAST].pos.y).toBeLessThan(midY)
+		expect(body.crashed).toBe(false)
+	})
+})
+
 describe('physics: facing (which way the snail points)', () => {
 	// Give a body point a velocity by back-dating its `prev` so (pos-prev)/dt === v.
 	const setVel = (body: Body, i: number, vx: number, vy: number) => {

@@ -13,6 +13,19 @@
 import { atom } from 'tldraw'
 import type { Vec2 } from './physics'
 
+/**
+ * The play style. 'line' is the classic Line Rider clone (gravity-only sled on
+ * user-drawn track). 'side' is the side-scroller variation: the character gets a
+ * constant horizontal propulsion force and auto-runs along an implicit flat
+ * ground plane, launching off ramps the user draws above it. Rides an atom (not
+ * props) for the same referential-stability reason as the other inputs; captured
+ * at run start by RunController so it can't change mid-run.
+ */
+export type GameMode = 'line' | 'side'
+
+/** The active play style. Defaults to classic line-rider. */
+export const modeAtom = atom<GameMode>('lr-mode', 'line')
+
 /** Whether a run is in progress. */
 export const playingAtom = atom('lr-playing', false)
 

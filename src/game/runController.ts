@@ -17,12 +17,19 @@ import {
 	stepBody,
 	bodyCenter,
 	bodyFacing,
+	PHYSICS,
 	type Body,
 	type ContactEvent,
 } from './physics'
 import { collectCheckpointHits, type Checkpoint } from './checkpoints'
 import type { TrackSegment } from './geometry'
 import type { Vec2 } from './physics'
+import type { GameMode } from './state'
+
+// Half-width of the implicit ground plane injected in side mode, page px. Wide
+// enough that a run never reaches its end (kept finite, not infinite, so
+// sweptContact's span/corner logic stays well-defined — see the physics module).
+const SIDE_GROUND_HALF_WIDTH = 100_000
 
 /**
  * The track the controller rides, as the two reactive views the Rider already
@@ -41,6 +48,8 @@ export interface RunInputs {
 	start: Vec2
 	/** Reset nonce; a change re-seats the body even if `start` didn't move. */
 	resetNonce: number
+	/** Play style. 'side' adds forward thrust + an implicit ground plane. */
+	mode: GameMode
 }
 
 /** What a fixed substep produced, for the loop's audio / scoring wiring. */
@@ -70,6 +79,12 @@ export class RunController {
 	// frames (bodyFacing applies a dead-band) and reset to +1 with the body.
 	private facingX: 1 | -1 = 1
 
+	// The play style + spawn point frozen for the current run. Captured on the play
+	// edge (with the track snapshot) so mode/ground can't change mid-run, matching
+	// how the collision snapshot is frozen. `runStart` places the side-mode ground.
+	private runMode: GameMode = 'line'
+	private runStart: Vec2
+
 	// Edge tracking so we only re-seat / snapshot on a transition, not every frame.
 	private wasPlaying = false
 	private lastStart: Vec2
@@ -82,6 +97,7 @@ export class RunController {
 	constructor(track: TrackSource, inputs: RunInputs) {
 		this.track = track
 		this.body = makeBody(inputs.start)
+		this.runStart = inputs.start
 		this.lastStart = inputs.start
 		this.lastReset = inputs.resetNonce
 	}
@@ -93,6 +109,16 @@ export class RunController {
 	/** The collision snapshot the sim is (or last) running against. */
 	get currentSegments(): TrackSegment[] {
 		return this.segments
+	}
+
+	/**
+	 * The spawn point frozen for the current run. In side mode the implicit ground
+	 * plane sits at this Y, so the Rider draws the visible ground line here during a
+	 * run (matching the collision snapshot); while stopped it draws at the live
+	 * start instead.
+	 */
+	get currentStart(): Vec2 {
+		return this.runStart
 	}
 
 	get currentCheckpoints(): Checkpoint[] {
@@ -130,16 +156,18 @@ export class RunController {
 		// off then on while a run is active resumes it — no re-seat.
 		let runStarted = false
 		if (inputs.playing && !this.wasPlaying && !this.runActive) {
-			this.beginRun(inputs.start)
+			this.beginRun(inputs.start, inputs.mode)
 			this.runActive = true
 			runStarted = true
 		} else if (inputs.playing && !this.wasPlaying) {
-			// Resume after a pause: the body continues where it left off, but the
-			// track is editable while paused (App drops read-only on pause), so a
-			// shape moved/rotated/recolored mid-pause would leave the frozen snapshot
-			// stale — the sled would collide against the OLD geometry (the rotated-
-			// shape glitch). Re-freeze the snapshot from the live track on every play
-			// edge so resume picks up any edits, without disturbing the body.
+			// Resume after a pause: the body continues where it left off, but mode +
+			// the track are editable while paused (App drops read-only on pause), so a
+			// shape moved/rotated/recolored — or a mode switch — mid-pause would leave
+			// the frozen snapshot stale (the sled would collide against the OLD
+			// geometry — the rotated-shape glitch). Re-freeze mode + the snapshot from
+			// the live inputs on every play edge so resume picks up any edits, without
+			// disturbing the body.
+			this.runMode = inputs.mode
 			this.snapshotTrack()
 		}
 		this.wasPlaying = inputs.playing
@@ -154,10 +182,14 @@ export class RunController {
 	}
 
 	/**
-	 * A run begins: re-seat at the start and freeze the current track as this run's
-	 * collision + checkpoint snapshot, re-arming all flags.
+	 * A run begins: capture the play mode + spawn, re-seat at the start, and freeze
+	 * the current track as this run's collision + checkpoint snapshot, re-arming all
+	 * flags. Mode/start are frozen here (and re-frozen on resume) so they can't
+	 * change mid-run, matching the collision snapshot.
 	 */
-	private beginRun(start: Vec2): void {
+	private beginRun(start: Vec2, mode: GameMode): void {
+		this.runMode = mode
+		this.runStart = start
 		this.reseat(start)
 		this.snapshotTrack()
 		this.collected = new Set<string>()
@@ -169,10 +201,28 @@ export class RunController {
 	 * at run start AND on resume after a pause, so edits made while paused (e.g.
 	 * rotating a shape) take effect rather than leaving the sled colliding against
 	 * stale geometry. Does not touch `collected`, so a resume keeps scored flags.
+	 *
+	 * In 'side' mode this also appends the implicit ground plane — one wide
+	 * horizontal solid segment at the spawn's Y — so the character starts on the
+	 * ground and ramps drawn above it launch via the same collision path. Rebuilt
+	 * from `runStart` here, so moving the start (which re-freezes on the next play)
+	 * moves the ground with it.
 	 */
 	private snapshotTrack(): void {
 		this.segments = this.track.segments()
 		this.checkpoints = this.track.checkpoints()
+		if (this.runMode === 'side') {
+			const y = this.runStart.y
+			this.segments = [
+				...this.segments,
+				{
+					a: { x: this.runStart.x - SIDE_GROUND_HALF_WIDTH, y },
+					b: { x: this.runStart.x + SIDE_GROUND_HALF_WIDTH, y },
+					kind: 'solid',
+					strength: 1,
+				},
+			]
+		}
 	}
 
 	/**
@@ -184,7 +234,14 @@ export class RunController {
 	 */
 	stepFixed(dt: number, contacts: ContactEvent[]): SubstepResult {
 		contacts.length = 0
-		stepBody(this.body, this.segments, dt, contacts)
+		// Side mode drives the body with constant forward thrust (grounded-only, see
+		// stepBody); line mode omits opts so the classic gravity-only sled is
+		// byte-identical.
+		const opts =
+			this.runMode === 'side'
+				? { thrust: PHYSICS.sideThrust, cruise: PHYSICS.sideCruiseSpeed }
+				: undefined
+		stepBody(this.body, this.segments, dt, contacts, opts)
 
 		let scored = false
 		if (this.checkpoints.length > 0) {
